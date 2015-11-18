@@ -506,12 +506,14 @@ var CMS = window.CMS || {};
                     this.ui.body.addClass('cms-modal-maximized');
 
                     this.maximized = true;
+                    this.dispatchEvent('modal-maximized', { instance: this });
                 } else {
                     // minimize
                     this.ui.body.removeClass('cms-modal-maximized');
                     this.ui.modal.css(this.ui.modal.data('css'));
 
                     this.maximized = false;
+                    this.dispatchEvent('modal-restored', { instance: this });
                 }
             },
 
@@ -839,6 +841,7 @@ var CMS = window.CMS || {};
                 // attach load event for iframe to prevent flicker effects
                 iframe.on('load', function () {
                     var messages;
+                    var messageList;
                     var contents;
                     var body;
                     var innerTitle;
@@ -878,13 +881,14 @@ var CMS = window.CMS || {};
                     CMS.API.Toolbar.hideLoader();
 
                     // show messages in toolbar if provided
-                    messages = iframe.contents().find('.messagelist li');
+                    messageList = iframe.contents().find('.messagelist');
+                    messages = messageList.find('li');
                     if (messages.length) {
                         CMS.API.Messages.open({
                             message: messages.eq(0).text()
                         });
                     }
-                    messages.remove();
+                    messageList.remove();
                     contents = iframe.contents();
                     body = contents.find('body');
 

@@ -67,6 +67,19 @@ var CMS = {
     'use strict';
     // shorthand for jQuery(document).ready();
     $(function () {
+        var root = $('#cms-top');
+        /**
+         * @function _ns
+         * @private
+         * @param {String} events space separated event names to be namespaces
+         * @return {String} string containing space separated namespaced event names
+         */
+        var _ns = function nameSpaceEvent(events) {
+            return events.split(/\s+/g).map(function (className) {
+                return 'cms-' + className;
+            }).join(' ');
+        };
+
         /**
          * Provides various helpers that are mixed in all CMS classes.
          *
@@ -475,7 +488,62 @@ var CMS = {
                 } catch (e) {
                     return false;
                 }
-            }())
+            }()),
+
+            /**
+             * Adds an event listener to the "CMS".
+             *
+             * @method addEventListener
+             * @param {String} eventName string containing space separated event names
+             * @param {Function} fn callback to run when the event happens
+             */
+            addEventListener: function addEventListener(eventName, fn) {
+                return root.on(_ns(eventName), fn);
+            },
+
+            /**
+             * Removes the event listener from the "CMS". If a callback is provided - removes only that callback.
+             *
+             * @method addEventListener
+             * @param {String} eventName string containing space separated event names
+             * @param {Function} [fn] specific callback to be removed
+             */
+            removeEventListener: function removeEventListener(eventName, fn) {
+                return root.off(_ns(eventName), fn);
+            },
+
+            /**
+             * Dispatches an event
+             * @method dispatchEvent
+             * @param {String} eventName  string containing space separated event names
+             * @param {Object} payload whatever payload required for the consumer
+             */
+            dispatchEvent: function dispatchEvent(eventName, payload) {
+                return root.trigger(_ns(eventName), [payload]);
+            },
+
+            /**
+             * Returns a function that wraps the passed function so the wrapped function
+             * is executed only once, no matter how many times the wrapper function is executed.
+             *
+             * @method once
+             * @param {Function} fn function to be executed only once
+             * @return {Function}
+             */
+            once: function once(fn) {
+                var result;
+                var didRunOnce = false;
+
+                return function () {
+                    if (didRunOnce) {
+                        fn = undefined;
+                    } else {
+                        didRunOnce = true;
+                        result = fn.apply(this, arguments);
+                    }
+                    return result;
+                };
+            }
         };
 
         // autoinits

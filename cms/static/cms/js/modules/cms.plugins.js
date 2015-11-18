@@ -36,7 +36,7 @@ var CMS = window.CMS || {};
             if (e.keyCode === CMS.KEYS.SHIFT) {
                 doc.data('expandmode', false);
             }
-        }).on('click', '.cms-plugin a, a:has(.cms-plugin)', function (e) {
+        }).on('click.cms.plugin', '.cms-plugin a, a:has(.cms-plugin)', function (e) {
             // prevents single click from messing up the edit call
             // don't go to the link if there is custom js attached to it
             // or if it's clicked along with shift, ctrl, cmd
@@ -208,8 +208,11 @@ var CMS = window.CMS || {};
 
                 // adds edit tooltip
                 this.ui.container.on(this.pointerOverAndOut + ' ' + this.touchStart, function (e) {
-                    if (e.type !== 'touchstart') {
-                        e.stopPropagation();
+                    // required for both, click and touch
+                    // otherwise propagation won't work to the nested plugin
+                    e.stopPropagation();
+                    if (e.type === 'touchstart') {
+                        CMS.API.Tooltip._forceTouchOnce();
                     }
                     var name = that.options.plugin_name;
                     var id = that.options.plugin_id;
@@ -755,7 +758,7 @@ var CMS = window.CMS || {};
                 });
 
                 that._setupActions(nav);
-                // prevent propagnation
+                // prevent propagation
                 nav.on([this.pointerUp, this.pointerDown, this.click, this.doubleClick].join(' '), function (e) {
                     e.stopPropagation();
                 });
@@ -875,7 +878,7 @@ var CMS = window.CMS || {};
                     });
                 });
 
-                // prevent propagnation
+                // prevent propagation
                 nav.on([this.pointerUp, this.pointerDown, this.click, this.doubleClick].join(' '), function (e) {
                     e.stopPropagation();
                 });
