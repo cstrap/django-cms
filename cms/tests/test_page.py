@@ -1,44 +1,33 @@
 # -*- coding: utf-8 -*-
-from __future__ import with_statement
 import datetime
 import os.path
+from unittest import skipIf
 
 from django.conf import settings
 from django.core.cache import cache
-from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.sites.models import Site
 from django.core.exceptions import ValidationError
 from django.core.urlresolvers import reverse
 from django.db import transaction
 from django.db.models import signals
-from django.http import HttpRequest, HttpResponse, HttpResponseNotFound
-from django.test.utils import override_settings
-from django.utils.encoding import force_text
+from django.http import HttpResponse, HttpResponseNotFound
 from django.utils.timezone import now as tz_now
 
 from cms import constants
-from cms.admin.forms import AdvancedSettingsForm
-from cms.admin.pageadmin import PageAdmin
 from cms.api import create_page, add_plugin, create_title, publish_page
+from cms.constants import PUBLISHER_STATE_DEFAULT, PUBLISHER_STATE_DIRTY, PUBLISHER_STATE_PENDING
 from cms.exceptions import PublicIsUnmodifiable, PublicVersionNeeded
-from cms.middleware.user import CurrentUserMiddleware
-from cms.models import Page, Title, EmptyTitle
+from cms.models import Page, Title
 from cms.models.placeholdermodel import Placeholder
 from cms.models.pluginmodel import CMSPlugin
 from cms.signals import pre_save_page, post_save_page
 from cms.sitemaps import CMSSitemap
-from cms.templatetags.cms_tags import get_placeholder_content
-from cms.test_utils.compat import skipIf
-from cms.test_utils.testcases import (CMSTestCase, ClearURLs, URL_CMS_PAGE, URL_CMS_PAGE_ADD)
-from cms.test_utils.util.context_managers import LanguageOverride, UserLoginContext
+from cms.test_utils.testcases import CMSTestCase
 from cms.utils import get_cms_setting
-from cms.utils.compat import DJANGO_1_7
-from cms.utils.compat.dj import installed_apps
 from cms.utils.i18n import force_language
 from cms.utils.page_resolver import get_page_from_request, is_valid_url
 from cms.utils.page import is_valid_page_slug, get_available_slug
-from cms.utils.urlutils import admin_reverse
 
 from djangocms_link.cms_plugins import LinkPlugin
 from djangocms_text_ckeditor.cms_plugins import TextPlugin
@@ -52,9 +41,6 @@ class PageMigrationTestCase(CMSTestCase):
         Test correct content type is set for Page object
         """
         from django.contrib.contenttypes.models import ContentType
-        if DJANGO_1_7:
-            # obsolete test for an old bug, can be dropped at any time
-            self.assertFalse(ContentType.objects.filter(model='page', name='', app_label='cms').exists())
         self.assertEqual(ContentType.objects.filter(model='page', app_label='cms').count(), 1)
 
 
@@ -63,17 +49,9 @@ def has_no_custom_user():
 
 
 class PagesTestCase(CMSTestCase):
+
     def tearDown(self):
         cache.clear()
-
-    def test_add_page(self):
-        """
-        Test that the add admin page could be displayed via the admin
-        """
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            response = self.client.get(URL_CMS_PAGE_ADD)
-            self.assertEqual(response.status_code, 200)
 
     def test_absolute_url(self):
         user = self.get_superuser()
@@ -185,69 +163,6 @@ class PagesTestCase(CMSTestCase):
         self.assertEqual(page3_p.numchild, 0)
         self.assertTrue(page3_p.is_leaf())
 
-    def test_create_page_admin(self):
-        """
-        Test that a page can be created via the admin
-        """
-        page_data = self.get_new_page_data()
-
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            self.assertEqual(Title.objects.all().count(), 0)
-            self.assertEqual(Page.objects.all().count(), 0)
-            # crate home and auto publish
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-            self.assertRedirects(response, URL_CMS_PAGE)
-            page_data = self.get_new_page_data()
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-            self.assertRedirects(response, URL_CMS_PAGE)
-
-            #self.assertEqual(Page.objects.all().count(), 2)
-            #self.assertEqual(Title.objects.all().count(), 2)
-
-            title = Title.objects.drafts().get(slug=page_data['slug'])
-            self.assertRaises(Title.DoesNotExist, Title.objects.public().get, slug=page_data['slug'])
-
-            page = title.page
-            page.save()
-            page.publish('en')
-            self.assertEqual(page.get_title(), page_data['title'])
-            self.assertEqual(page.get_slug(), page_data['slug'])
-            self.assertEqual(page.placeholders.all().count(), 2)
-
-            # were public instances created?
-            self.assertEqual(Title.objects.all().count(), 4)
-            title = Title.objects.drafts().get(slug=page_data['slug'])
-            title = Title.objects.public().get(slug=page_data['slug'])
-
-    def test_create_tree_admin(self):
-        """
-        Test that a tree can be created via the admin
-        """
-        page_1 = self.get_new_page_data()
-
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            # create home and auto publish
-            response = self.client.post(URL_CMS_PAGE_ADD, page_1)
-            self.assertRedirects(response, URL_CMS_PAGE)
-
-            title_home = Title.objects.drafts().get(slug=page_1['slug'])
-
-            page_2 = self.get_new_page_data(parent_id=title_home.page.pk)
-            page_3 = self.get_new_page_data(parent_id=title_home.page.pk)
-            page_4 = self.get_new_page_data(parent_id=title_home.page.pk)
-
-            response = self.client.post(URL_CMS_PAGE_ADD, page_2)
-            self.assertRedirects(response, URL_CMS_PAGE)
-            response = self.client.post(URL_CMS_PAGE_ADD, page_3)
-            self.assertRedirects(response, URL_CMS_PAGE)
-
-            title_left = Title.objects.drafts().get(slug=page_2['slug'])
-
-            response = self.client.post(URL_CMS_PAGE_ADD + '?target=%s&amp;position=right' % title_left.page.pk, page_4)
-            self.assertRedirects(response, URL_CMS_PAGE)
-
     def test_create_page_api(self):
         page_data = {
             'title': 'root',
@@ -308,64 +223,6 @@ class PagesTestCase(CMSTestCase):
         page.delete()
 
         self.assertEqual(Page.objects.count(), 0)
-
-    def test_slug_collision(self):
-        """
-        Test a slug collision
-        """
-        page_data = self.get_new_page_data()
-        # create first page
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-            self.assertRedirects(response, URL_CMS_PAGE)
-
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-
-            self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.request['PATH_INFO'].endswith(URL_CMS_PAGE_ADD))
-            self.assertContains(response, '<ul class="errorlist"><li>Another page with this slug already exists</li></ul>')
-
-    def test_child_slug_collision(self):
-        """
-        Test a slug collision
-        """
-        root = create_page("home", 'nav_playground.html', "en", published=True)
-        page = create_page("page", 'nav_playground.html', "en")
-        subPage = create_page("subpage", 'nav_playground.html', "en", parent=page)
-        create_page("child-page", 'nav_playground.html', "en", parent=root)
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-
-            response = self.client.get(URL_CMS_PAGE_ADD+"?target=%s&position=right&site=1" % subPage.pk)
-            self.assertContains(response, 'value="%s"' % page.pk)
-
-            # slug collision between two child pages of the same node
-            page_data = self.get_new_page_data(page.pk)
-            page_data['slug'] = 'subpage'
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-
-            self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.request['PATH_INFO'].endswith(URL_CMS_PAGE_ADD))
-            self.assertContains(response, '<ul class="errorlist"><li>Another page with this slug already exists</li></ul>')
-
-            # slug collision between page with no parent and a child page of root
-            page_data = self.get_new_page_data()
-            page_data['slug'] = 'child-page'
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-
-            self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.request['PATH_INFO'].endswith(URL_CMS_PAGE_ADD))
-            self.assertContains(response, '<ul class="errorlist"><li>Another page with this slug already exists</li></ul>')
-
-            # slug collision between two top-level pages
-            page_data = self.get_new_page_data()
-            page_data['slug'] = 'page'
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-
-            self.assertEqual(response.status_code, 200)
-            self.assertTrue(response.request['PATH_INFO'].endswith(URL_CMS_PAGE_ADD))
-            self.assertContains(response, '<ul class="errorlist"><li>Another page with this slug already exists</li></ul>')
 
     def test_get_available_slug_recursion(self):
         """ Checks cms.utils.page.get_available_slug for infinite recursion
@@ -447,152 +304,6 @@ class PagesTestCase(CMSTestCase):
             response = self.client.get(page2.get_absolute_url())
             self.assertEqual(response.status_code, 200)
 
-    def test_edit_page(self):
-        """
-        Test that a page can edited via the admin
-        """
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            page_data = self.get_new_page_data()
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-            page = Page.objects.get(title_set__slug=page_data['slug'], publisher_is_draft=True)
-            response = self.client.get('/en/admin/cms/page/%s/' % page.id)
-            self.assertEqual(response.status_code, 200)
-            page_data['title'] = 'changed title'
-            response = self.client.post('/en/admin/cms/page/%s/' % page.id, page_data)
-            self.assertRedirects(response, URL_CMS_PAGE)
-            self.assertEqual(page.get_title(), 'changed title')
-
-    def test_moderator_edit_page_redirect(self):
-        """
-        Test that a page can be edited multiple times with moderator
-        """
-        create_page("home", "nav_playground.html", "en", published=True)
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            page_data = self.get_new_page_data()
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-            self.assertEqual(response.status_code, 302)
-            page = Page.objects.get(title_set__slug=page_data['slug'])
-            response = self.client.get('/en/admin/cms/page/%s/' % page.id)
-            self.assertEqual(response.status_code, 200)
-            page_data['overwrite_url'] = '/hello/'
-            page_data['has_url_overwrite'] = True
-            response = self.client.post('/en/admin/cms/page/%s/advanced-settings/' % page.id, page_data)
-            self.assertRedirects(response, URL_CMS_PAGE)
-            self.assertEqual(page.get_absolute_url(), '/en/hello/')
-            Title.objects.all()[0]
-            page = page.reload()
-            page.publish('en')
-            page_data['title'] = 'new title'
-            response = self.client.post('/en/admin/cms/page/%s/' % page.id, page_data)
-            page = Page.objects.get(title_set__slug=page_data['slug'], publisher_is_draft=True)
-            self.assertRedirects(response, URL_CMS_PAGE)
-            self.assertEqual(page.get_title(), 'new title')
-
-    def test_meta_description_fields_from_admin(self):
-        """
-        Test that description and keywords tags can be set via the admin
-        """
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            page_data = self.get_new_page_data()
-            page_data["meta_description"] = "I am a page"
-            self.client.post(URL_CMS_PAGE_ADD, page_data)
-            page = Page.objects.get(title_set__slug=page_data['slug'], publisher_is_draft=True)
-            response = self.client.get('/en/admin/cms/page/%s/' % page.id)
-            self.assertEqual(response.status_code, 200)
-            page_data['meta_description'] = 'I am a duck'
-            response = self.client.post('/en/admin/cms/page/%s/' % page.id, page_data)
-            self.assertRedirects(response, URL_CMS_PAGE)
-            page = Page.objects.get(title_set__slug=page_data["slug"], publisher_is_draft=True)
-            self.assertEqual(page.get_meta_description(), 'I am a duck')
-
-    def test_meta_description_from_template_tags(self):
-        from django import template
-
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            page_data = self.get_new_page_data()
-            page_data["title"] = "Hello"
-            page_data["meta_description"] = "I am a page"
-            self.client.post(URL_CMS_PAGE_ADD, page_data)
-            page = Page.objects.get(title_set__slug=page_data['slug'], publisher_is_draft=True)
-            self.client.post('/en/admin/cms/page/%s/' % page.id, page_data)
-            t = template.Template(
-                "{% load cms_tags %}{% page_attribute title %} {% page_attribute meta_description %}")
-            req = HttpRequest()
-            page.save()
-            page.publish('en')
-            req.current_page = page
-            req.REQUEST = {}
-            self.assertEqual(t.render(template.Context({"request": req})), "Hello I am a page")
-
-    def test_page_obj_change_data_from_template_tags(self):
-        from django import template
-
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            page_data = self.get_new_page_data()
-            change_user = str(superuser)
-            # some databases don't store microseconds, so move the start flag
-            # back by 1 second
-            before_change = tz_now()+datetime.timedelta(seconds=-1)
-            self.client.post(URL_CMS_PAGE_ADD, page_data)
-            page = Page.objects.get(
-                title_set__slug=page_data['slug'],
-                publisher_is_draft=True
-            )
-            self.client.post('/en/admin/cms/page/%s/' % page.id, page_data)
-            t = template.Template(
-                "{% load cms_tags %}{% page_attribute changed_by %} changed "
-                "on {% page_attribute changed_date as page_change %}"
-                "{{ page_change|date:'Y-m-d\TH:i:s' }}"
-            )
-            req = HttpRequest()
-            page.save()
-            page.publish('en')
-            after_change = tz_now()
-            req.current_page = page
-            req.REQUEST = {}
-
-            actual_result = t.render(template.Context({"request": req}))
-            desired_result = "{0} changed on {1}".format(
-                change_user,
-                actual_result[-19:]
-            )
-            save_time = datetime.datetime.strptime(
-                actual_result[-19:],
-                "%Y-%m-%dT%H:%M:%S"
-            )
-
-            self.assertEqual(actual_result, desired_result)
-            # direct time comparisons are flaky, so we just check if the
-            # page's changed_date is within the time range taken by this test
-            self.assertLessEqual(before_change, save_time)
-            self.assertLessEqual(save_time, after_change)
-
-    def test_copy_page(self):
-        """
-        Test that a page can be copied via the admin
-        """
-        page_a = create_page("page_a", "nav_playground.html", "en", published=True)
-        page_a_a = create_page("page_a_a", "nav_playground.html", "en",
-                               parent=page_a, published=True, reverse_id="hello")
-        create_page("page_a_a_a", "nav_playground.html", "en", parent=page_a_a, published=True)
-
-        page_b = create_page("page_b", "nav_playground.html", "en", published=True)
-        page_b_a = create_page("page_b_b", "nav_playground.html", "en",
-                               parent=page_b, published=True)
-
-        count = Page.objects.drafts().count()
-
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            self.copy_page(page_a, page_b_a)
-
-        self.assertEqual(Page.objects.drafts().count() - count, 3)
-
     def test_copy_page_method(self):
         """
         Test that a page can be copied via the admin
@@ -617,157 +328,133 @@ class PagesTestCase(CMSTestCase):
         self.assertEqual(Page.objects.filter(site_id=site.pk, depth=1).count(), 2)
         self.assertEqual(Page.objects.filter(site_id=site.pk).count(), 6)
 
-    def test_copy_self_page(self):
-        """
-        Test that a page can be copied via the admin
-        """
-        page_a = create_page("page_a", "nav_playground.html", "en")
-        page_b = create_page("page_b", "nav_playground.html", "en", parent=page_a)
-        page_c = create_page("page_c", "nav_playground.html", "en", parent=page_b)
-        with self.login_user_context(self.get_superuser()):
-            self.copy_page(page_b, page_b)
-        self.assertEqual(Page.objects.drafts().count(), 5)
-        self.assertEqual(Page.objects.filter(parent=page_b).count(), 2)
-        page_d = Page.objects.filter(parent=page_b)[1]
-        page_e = Page.objects.get(parent=page_d)
-        self.assertEqual(page_d.path, '000100010002')
-        self.assertEqual(page_e.path, '0001000100020001')
-        page_e.delete()
-        page_d.delete()
-        with self.login_user_context(self.get_superuser()):
-            self.copy_page(page_b, page_c)
-        self.assertEqual(Page.objects.filter(parent=page_c).count(), 1)
-        self.assertEqual(Page.objects.filter(parent=page_b).count(), 1)
-        Page.objects.filter(parent=page_c).delete()
-        self.assertEqual(Page.objects.all().count(), 3)
-        page_b = page_b.reload()
-        page_c = page_c.reload()
-        with self.login_user_context(self.get_superuser()):
-            self.copy_page(page_b, page_c, position="left")
-        self.assertEqual(Page.objects.filter(parent=page_b).count(), 2)
-
     def test_public_exceptions(self):
         page_a = create_page("page_a", "nav_playground.html", "en", published=True)
         page_b = create_page("page_b", "nav_playground.html", "en")
         page = page_a.publisher_public
         self.assertRaises(PublicIsUnmodifiable, page.copy_page, 3, 1)
         self.assertRaises(PublicIsUnmodifiable, page.unpublish, 'en')
-        self.assertRaises(PublicIsUnmodifiable, page.revert, 'en')
+        self.assertRaises(PublicIsUnmodifiable, page.reset_to_public, 'en')
         self.assertRaises(PublicIsUnmodifiable, page.publish, 'en')
 
         self.assertTrue(page.get_draft_object().publisher_is_draft)
-        self.assertRaises(PublicVersionNeeded, page_b.revert, 'en')
+        self.assertRaises(PublicVersionNeeded, page_b.reset_to_public, 'en')
 
-    def test_get_admin_tree_title(self):
-        page = create_page("page_a", "nav_playground.html", "en", published=True)
-        self.assertEqual(page.get_admin_tree_title(), 'page_a')
-        page.title_cache = {}
-        self.assertEqual("Empty", force_text(page.get_admin_tree_title()))
-        languages = {
-            1: [
-                {
-                    'code': 'en',
-                    'name': 'English',
-                    'fallbacks': ['fr', 'de'],
-                    'public': True,
-                    'fallbacks':['fr']
-                },
-                {
-                    'code': 'fr',
-                    'name': 'French',
-                    'public': True,
-                    'fallbacks':['en']
-                },
-        ]}
-        with self.settings(CMS_LANGUAGES=languages):
-            with force_language('fr'):
-                page.title_cache = {'en': Title(slug='test', page_title="test2", title="test2")}
-                self.assertEqual('test2', force_text(page.get_admin_tree_title()))
-                page.title_cache = {'en': Title(slug='test', page_title="test2")}
-                self.assertEqual('test2', force_text(page.get_admin_tree_title()))
-                page.title_cache = {'en': Title(slug='test', menu_title="test2")}
-                self.assertEqual('test2', force_text(page.get_admin_tree_title()))
-                page.title_cache = {'en': Title(slug='test2')}
-                self.assertEqual('test2', force_text(page.get_admin_tree_title()))
-                page.title_cache = {'en': Title(slug='test2'), 'fr': EmptyTitle('fr')}
-                self.assertEqual('test2', force_text(page.get_admin_tree_title()))
+    def test_move_page_regression_5640(self):
+        # ref: https://github.com/divio/django-cms/issues/5640
+        alpha = create_page("Alpha", "nav_playground.html", "en", published=True)
+        beta = create_page("Beta", "nav_playground.html", "en", published=False)
+        alpha.move_page(beta, position='right')
+        alpha = alpha.reload()
+        beta = beta.reload()
 
-    def test_language_change(self):
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            page_data = self.get_new_page_data()
-            self.client.post(URL_CMS_PAGE_ADD, page_data)
-            pk = Page.objects.all()[0].pk
-            response = self.client.get("/en/admin/cms/page/%s/" % pk, {"language": "en"})
-            self.assertEqual(response.status_code, 200)
-            response = self.client.get("/en/admin/cms/page/%s/" % pk, {"language": "de"})
-            self.assertEqual(response.status_code, 200)
+        self.assertEqual(beta.path, '0003')
+        # Draft
+        self.assertEqual(alpha.path, '0004')
+        # Public
+        self.assertEqual(alpha.publisher_public.path, '0005')
 
-    def test_move_page(self):
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            page_home = self.get_new_page_data()
-            self.client.post(URL_CMS_PAGE_ADD, page_home)
-            page_data1 = self.get_new_page_data()
-            self.client.post(URL_CMS_PAGE_ADD, page_data1)
-            page_data2 = self.get_new_page_data()
-            self.client.post(URL_CMS_PAGE_ADD, page_data2)
-            page_data3 = self.get_new_page_data()
-            self.client.post(URL_CMS_PAGE_ADD, page_data3)
-            home = Page.objects.all()[0]
-            page1 = Page.objects.all()[2]
-            page2 = Page.objects.all()[3]
-            page3 = Page.objects.all()[4]
+    def test_move_page_regression_nested_5640(self):
+        # ref: https://github.com/divio/django-cms/issues/5640
+        alpha = create_page("Alpha", "nav_playground.html", "en", published=True)
+        beta = create_page("Beta", "nav_playground.html", "en", published=False)
+        gamma = create_page("Gamma", "nav_playground.html", "en", published=False)
+        delta = create_page("Delta", "nav_playground.html", "en", published=True)
+        theta = create_page("Theta", "nav_playground.html", "en", published=True)
 
-            # move pages
-            response = self.client.post("/en/admin/cms/page/%s/move-page/" % page3.pk,
-                                        {"target": page2.pk, "position": "last-child"})
-            self.assertEqual(response.status_code, 200)
+        beta.move_page(alpha, position='last-child')
+        gamma.move_page(beta.reload(), position='last-child')
+        delta.move_page(gamma.reload(), position='last-child')
+        theta.move_page(delta.reload(), position='last-child')
 
-            page3 = Page.objects.get(pk=page3.pk)
-            response = self.client.post("/en/admin/cms/page/%s/move-page/" % page2.pk,
-                                        {"target": page1.pk, "position": "last-child"})
-            self.assertEqual(response.status_code, 200)
-            # check page2 path and url
-            page2 = Page.objects.get(pk=page2.pk)
-            self.assertEqual(page2.get_path(), page_data1['slug'] + "/" + page_data2['slug'])
-            self.assertEqual(page2.get_absolute_url(),
-                             self.get_pages_root() + page_data1['slug'] + "/" + page_data2['slug'] + "/")
-            # check page3 path and url
-            page3 = Page.objects.get(pk=page3.pk)
-            self.assertEqual(page3.get_path(), page_data1['slug'] + "/" + page_data2['slug'] + "/" + page_data3['slug'])
-            self.assertEqual(page3.get_absolute_url(),
-                             self.get_pages_root() + page_data1['slug'] + "/" + page_data2['slug'] + "/" + page_data3[
-                                 'slug'] + "/")
+        alpha = alpha.reload()
+        beta = beta.reload()
+        gamma = gamma.reload()
+        delta = delta.reload()
+        theta = theta.reload()
 
-            # publish page 1 (becomes home)
-            home.delete()
-            page1.publish('en')
-            public_page1 = page1.publisher_public
-            self.assertEqual(page1.get_path(), '')
-            self.assertEqual(public_page1.get_path(), '')
-            # check that page2 and page3 url have changed
-            page2 = Page.objects.get(pk=page2.pk)
-            page2.publish('en')
-            public_page2 = page2.publisher_public
-            self.assertEqual(public_page2.get_absolute_url(), self.get_pages_root() + page_data2['slug'] + "/")
-            page3 = Page.objects.get(pk=page3.pk)
-            page3.publish('en')
-            public_page3 = page3.publisher_public
-            self.assertEqual(public_page3.get_absolute_url(),
-                             self.get_pages_root() + page_data2['slug'] + "/" + page_data3['slug'] + "/")
-            # set page2 as root and check path of 1 and 3
-            response = self.client.post("/en/admin/cms/page/%s/move-page/" % page2.pk,
-                                        {"target": page1.pk, "position": "left"})
-            self.assertEqual(response.status_code, 200)
-            page1 = Page.objects.get(pk=page1.pk)
-            self.assertEqual(page1.get_path(), page_data1['slug'])
-            page2 = Page.objects.get(pk=page2.pk)
-            # Check that page2 is now at the root of the tree
-            self.assertTrue(page2.is_home)
-            self.assertEqual(page2.get_path(), '')
-            page3 = Page.objects.get(pk=page3.pk)
-            self.assertEqual(page3.get_path(), page_data3['slug'])
+        tree = [
+            (alpha, '0001'),
+            (beta, '00010001'),
+            (gamma, '000100010001'),
+            (delta, '0001000100010001'),
+            (theta, '00010001000100010001'),
+            (alpha.publisher_public, '0002'),
+            (delta.publisher_public, '0006'),
+            (theta.publisher_public, '00060001'),
+        ]
+
+        for page, path in tree:
+            self.assertEqual(page.path, path)
+
+    def test_move_page_regression_5643(self):
+        # ref: https://github.com/divio/django-cms/issues/5643
+        alpha = create_page("Alpha", "nav_playground.html", "en", published=True)
+        beta = create_page("Beta", "nav_playground.html", "en", published=False)
+        gamma = create_page("Gamma", "nav_playground.html", "en", published=False)
+        delta = create_page("Delta", "nav_playground.html", "en", published=True)
+        theta = create_page("Theta", "nav_playground.html", "en", published=True)
+
+        beta.move_page(alpha, position='last-child')
+        gamma.move_page(beta.reload(), position='last-child')
+        delta.move_page(gamma.reload(), position='last-child')
+        theta.move_page(delta.reload(), position='last-child')
+
+        tree = [
+            (alpha, PUBLISHER_STATE_DEFAULT),
+            (beta, PUBLISHER_STATE_DIRTY),
+            (gamma, PUBLISHER_STATE_DIRTY),
+            (delta, PUBLISHER_STATE_PENDING),
+            (theta, PUBLISHER_STATE_PENDING),
+        ]
+
+        for page, state in tree:
+            self.assertEqual(page.get_publisher_state('en'), state)
+
+    def test_publish_page_regression_5642(self):
+        # ref: https://github.com/divio/django-cms/issues/5642
+        alpha = create_page("Alpha", "nav_playground.html", "en", published=True)
+        beta = create_page("Beta", "nav_playground.html", "en", published=False)
+        gamma = create_page("Gamma", "nav_playground.html", "en", published=False)
+        delta = create_page("Delta", "nav_playground.html", "en", published=True)
+        theta = create_page("Theta", "nav_playground.html", "en", published=True)
+
+        beta.move_page(alpha, position='last-child')
+        gamma.move_page(beta.reload(), position='last-child')
+        delta.move_page(gamma.reload(), position='last-child')
+        theta.move_page(delta.reload(), position='last-child')
+
+        beta.publish('en')
+
+        # The delta and theta pages should remain pending publication
+        # because gamma is still unpublished
+
+        self.assertTrue(beta.is_published('en'))
+        self.assertEqual(beta.get_publisher_state('en'), PUBLISHER_STATE_DEFAULT)
+
+        self.assertFalse(gamma.is_published('en'))
+        self.assertEqual(gamma.get_publisher_state('en'), PUBLISHER_STATE_DIRTY)
+
+        self.assertTrue(delta.is_published('en'))
+        self.assertEqual(delta.get_publisher_state('en'), PUBLISHER_STATE_PENDING)
+
+        self.assertTrue(theta.is_published('en'))
+        self.assertEqual(theta.get_publisher_state('en'), PUBLISHER_STATE_PENDING)
+
+        gamma.publish('en')
+
+        gamma = gamma.reload()
+        delta = delta.reload()
+        theta = theta.reload()
+
+        self.assertTrue(gamma.is_published('en'))
+        self.assertEqual(gamma.get_publisher_state('en'), PUBLISHER_STATE_DEFAULT)
+
+        self.assertTrue(delta.is_published('en'))
+        self.assertEqual(delta.get_publisher_state('en'), PUBLISHER_STATE_DEFAULT)
+
+        self.assertTrue(theta.is_published('en'))
+        self.assertEqual(theta.get_publisher_state('en'), PUBLISHER_STATE_DEFAULT)
 
     def test_move_page_inherit(self):
         parent = create_page("Parent", 'col_three.html', "en")
@@ -788,10 +475,7 @@ class PagesTestCase(CMSTestCase):
         url = page.get_absolute_url()
         response = self.client.get(url)
         self.assertEqual(200, response.status_code)
-        try:
-            path = os.path.join(settings.TEMPLATE_DIRS[0], 'add_placeholder.html')
-        except IndexError:
-            path = os.path.join(settings.TEMPLATES[0]['DIRS'][0], 'add_placeholder.html')
+        path = os.path.join(settings.TEMPLATES[0]['DIRS'][0], 'add_placeholder.html')
         with open(path, 'r') as fobj:
             old = fobj.read()
         try:
@@ -837,29 +521,6 @@ class PagesTestCase(CMSTestCase):
         sitemap = CMSSitemap()
         actual_last_modification_time = sitemap.lastmod(title)
         self.assertEqual(actual_last_modification_time.date(), now.date())
-
-    def test_edit_page_other_site_and_language(self):
-        """
-        Test that a page can edited via the admin when your current site is
-        different from the site you are editing and the language isn't available
-        for the current site.
-        """
-        self.assertEqual(Site.objects.all().count(), 1)
-        site = Site.objects.create(domain='otherlang', name='otherlang', pk=2)
-        # Change site for this session
-        page_data = self.get_new_page_data()
-        page_data['site'] = site.pk
-        page_data['title'] = 'changed title'
-        self.assertEqual(site.pk, 2)
-        TESTLANG = get_cms_setting('LANGUAGES')[site.pk][0]['code']
-        page_data['language'] = TESTLANG
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            response = self.client.post(URL_CMS_PAGE_ADD, page_data)
-            self.assertRedirects(response, URL_CMS_PAGE)
-            page = Page.objects.get(title_set__slug=page_data['slug'], publisher_is_draft=True)
-            with LanguageOverride(TESTLANG):
-                self.assertEqual(page.get_title(), 'changed title')
 
     def test_templates(self):
         """
@@ -934,38 +595,6 @@ class PagesTestCase(CMSTestCase):
         self.assertEqual(Placeholder.objects.count(), 0)
         self.assertEqual(Page.objects.count(), 0)
 
-    def test_get_page_from_request_on_non_cms_admin(self):
-        request = self.get_request(
-            admin_reverse('sampleapp_category_change', args=(1,))
-        )
-        page = get_page_from_request(request)
-        self.assertEqual(page, None)
-
-    def test_get_page_from_request_on_cms_admin(self):
-        page = create_page("page", "nav_playground.html", "en")
-        request = self.get_request(
-            admin_reverse('cms_page_change', args=(page.pk,))
-        )
-        found_page = get_page_from_request(request)
-        self.assertTrue(found_page)
-        self.assertEqual(found_page.pk, page.pk)
-
-    def test_get_page_from_request_on_cms_admin_nopage(self):
-        request = self.get_request(
-            admin_reverse('cms_page_change', args=(1,))
-        )
-        page = get_page_from_request(request)
-        self.assertEqual(page, None)
-
-    def test_get_page_from_request_cached(self):
-        mock_page = 'hello world'
-        request = self.get_request(
-            admin_reverse('sampleapp_category_change', args=(1,))
-        )
-        request._current_page_cache = mock_page
-        page = get_page_from_request(request)
-        self.assertEqual(page, mock_page)
-
     def test_get_page_from_request_nopage(self):
         request = self.get_request('/')
         page = get_page_from_request(request)
@@ -990,22 +619,6 @@ class PagesTestCase(CMSTestCase):
         found_page = get_page_from_request(request)
         self.assertIsNotNone(found_page)
         self.assertFalse(found_page.publisher_is_draft)
-
-    def test_get_page_from_request_on_cms_admin_with_editplugin(self):
-        page = create_page("page", "nav_playground.html", "en")
-        request = self.get_request(
-            admin_reverse('cms_page_change', args=(page.pk,)) + 'edit-plugin/42/'
-        )
-        found_page = get_page_from_request(request)
-        self.assertTrue(found_page)
-        self.assertEqual(found_page.pk, page.pk)
-
-    def test_get_page_from_request_on_cms_admin_with_editplugin_nopage(self):
-        request = self.get_request(
-            admin_reverse('cms_page_change', args=(1,)) + 'edit-plugin/42/'
-        )
-        page = get_page_from_request(request)
-        self.assertEqual(page, None)
 
     def test_ancestor_expired(self):
         yesterday = tz_now() - datetime.timedelta(days=1)
@@ -1042,22 +655,6 @@ class PagesTestCase(CMSTestCase):
                                publication_end_date=yesterday, published=True)
             resp = self.client.get(page.get_absolute_url('en'))
             self.assertEqual(resp.status_code, 404)
-
-    def test_existing_overwrite_url(self):
-        with self.settings(CMS_PERMISSION=False):
-            create_page('home', 'nav_playground.html', 'en', published=True)
-            create_page('boo', 'nav_playground.html', 'en', published=True)
-            data = {
-                'title': 'foo',
-                'overwrite_url': '/boo/',
-                'slug': 'foo',
-                'language': 'en',
-                'template': 'nav_playground.html',
-                'site': 1,
-            }
-            form = AdvancedSettingsForm(data)
-            self.assertFalse(form.is_valid())
-            self.assertTrue('overwrite_url' in form.errors)
 
     def test_page_urls(self):
         page1 = create_page('test page 1', 'nav_playground.html', 'en',
@@ -1209,7 +806,9 @@ class PagesTestCase(CMSTestCase):
         self.assertEqual(Page.objects.public().get_home().get_slug(), 'home')
 
     def test_plugin_loading_queries(self):
-        with self.settings(CMS_TEMPLATES=(('placeholder_tests/base.html', 'tpl'),)):
+        with self.settings(
+                CMS_TEMPLATES=(('placeholder_tests/base.html', 'tpl'), ),
+        ):
             page = create_page('home', 'placeholder_tests/base.html', 'en', published=True, slug='home')
             placeholders = list(page.placeholders.all())
             for i, placeholder in enumerate(placeholders):
@@ -1222,9 +821,15 @@ class PagesTestCase(CMSTestCase):
             # trigger the get_languages query so it doesn't get in our way
             context = self.get_context(page=page)
             context['request'].current_page.get_languages()
+
+            content_renderer = context['cms_content_renderer']
             with self.assertNumQueries(4):
                 for i, placeholder in enumerate(placeholders):
-                    content = get_placeholder_content(context, context['request'], page, placeholder.slot, False, None)
+                    content = content_renderer.render_page_placeholder(
+                        placeholder.slot,
+                        context,
+                        inherit=False,
+                    )
                     for j in range(5):
                         self.assertIn('text-%d-%d' % (i, j), content)
                         self.assertIn('link-%d-%d' % (i, j), content)
@@ -1330,128 +935,9 @@ class PagesTestCase(CMSTestCase):
             resp = self.client.get(page.get_absolute_url('en'))
             self.assertEqual(resp.get('X-Frame-Options'), 'SAMEORIGIN')
 
-class PageAdminTestBase(CMSTestCase):
-    """
-    The purpose of this class is to provide some basic functionality
-    to test methods of the Page admin.
-    """
-    placeholderconf = {'body': {
-        'limits': {
-            'global': 2,
-            'TextPlugin': 1,
-        }
-    }
-    }
-
-    def get_page(self, parent=None, site=None,
-                 language=None, template='nav_playground.html'):
-        page_data = {
-            'title': 'test page %d' % self.counter,
-            'slug': 'test-page-%d' % self.counter,
-            'language': settings.LANGUAGES[0][0] if not language else language,
-            'template': template,
-            'parent': parent if parent else None,
-            'site': site if site else Site.objects.get_current(),
-        }
-        page_data = self.get_new_page_data_dbfields()
-        return create_page(**page_data)
-
-    def get_admin(self):
-        """
-        Returns a PageAdmin instance.
-        """
-        return PageAdmin(Page, admin.site)
-
-    def get_post_request(self, data):
-        return self.get_request(post_data=data)
-
-
-class PageAdminTest(PageAdminTestBase):
-    def test_form_url_page_change(self):
-        superuser = self.get_superuser()
-        with self.login_user_context(superuser):
-            pageadmin = self.get_admin()
-            page = self.get_page()
-            form_url = admin_reverse("cms_page_change", args=(page.pk,))
-            # Middleware is needed to correctly setup the environment for the admin
-            middleware = CurrentUserMiddleware()
-            request = self.get_request()
-            middleware.process_request(request)
-            response = pageadmin.change_view(
-                request, str(page.pk),
-                form_url=form_url)
-            self.assertTrue('form_url' in response.context_data)
-            self.assertEqual(response.context_data['form_url'], form_url)
-
-    def test_global_limit_on_plugin_move(self):
-        admin = self.get_admin()
-        superuser = self.get_superuser()
-        cms_page = self.get_page()
-        source_placeholder = cms_page.placeholders.get(slot='right-column')
-        target_placeholder = cms_page.placeholders.get(slot='body')
-        data = {
-            'placeholder': source_placeholder,
-            'plugin_type': 'LinkPlugin',
-            'language': 'en',
-        }
-        plugin_1 = add_plugin(**data)
-        plugin_2 = add_plugin(**data)
-        plugin_3 = add_plugin(**data)
-        with UserLoginContext(self, superuser):
-            with self.settings(CMS_PLACEHOLDER_CONF=self.placeholderconf):
-                request = self.get_post_request(
-                    {'placeholder_id': target_placeholder.pk, 'plugin_id': plugin_1.pk, 'plugin_parent': ''})
-                response = admin.move_plugin(request) # first
-                self.assertEqual(response.status_code, 200)
-                request = self.get_post_request(
-                    {'placeholder_id': target_placeholder.pk, 'plugin_id': plugin_2.pk, 'plugin_parent': ''})
-                response = admin.move_plugin(request) # second
-                self.assertEqual(response.status_code, 200)
-                request = self.get_post_request(
-                    {'placeholder_id': target_placeholder.pk, 'plugin_id': plugin_3.pk, 'plugin_parent': ''})
-                response = admin.move_plugin(request) # third
-                self.assertEqual(response.status_code, 400)
-                self.assertEqual(response.content, b"This placeholder already has the maximum number of plugins (2).")
-
-    def test_type_limit_on_plugin_move(self):
-        admin = self.get_admin()
-        superuser = self.get_superuser()
-        cms_page = self.get_page()
-        source_placeholder = cms_page.placeholders.get(slot='right-column')
-        target_placeholder = cms_page.placeholders.get(slot='body')
-        data = {
-            'placeholder': source_placeholder,
-            'plugin_type': 'TextPlugin',
-            'language': 'en',
-        }
-        plugin_1 = add_plugin(**data)
-        plugin_2 = add_plugin(**data)
-        with UserLoginContext(self, superuser):
-            with self.settings(CMS_PLACEHOLDER_CONF=self.placeholderconf):
-                request = self.get_post_request(
-                    {'placeholder_id': target_placeholder.pk, 'plugin_id': plugin_1.pk, 'plugin_parent': ''})
-                response = admin.move_plugin(request) # first
-                self.assertEqual(response.status_code, 200)
-                request = self.get_post_request(
-                    {'placeholder_id': target_placeholder.pk, 'plugin_id': plugin_2.pk, 'plugin_parent': ''})
-                response = admin.move_plugin(request) # second
-                self.assertEqual(response.status_code, 400)
-                self.assertEqual(response.content,
-                                 b"This placeholder already has the maximum number (1) of allowed Text plugins.")
-
-
-@override_settings(ROOT_URLCONF='cms.test_utils.project.noadmin_urls')
-class NoAdminPageTests(ClearURLs, CMSTestCase):
-
-    def test_get_page_from_request_fakeadmin_nopage(self):
-        noadmin_apps = [app for app in installed_apps() if app != 'django.contrib.admin']
-        with self.settings(INSTALLED_APPS=noadmin_apps):
-            request = self.get_request('/en/admin/')
-            page = get_page_from_request(request)
-            self.assertEqual(page, None)
-
 
 class PreviousFilteredSiblingsTests(CMSTestCase):
+
     def test_with_publisher(self):
         home = create_page('home', 'nav_playground.html', 'en', published=True)
         home.publish('en')
@@ -1476,6 +962,7 @@ class PreviousFilteredSiblingsTests(CMSTestCase):
 
 
 class PageTreeTests(CMSTestCase):
+
     def test_rename_node(self):
         home = create_page('grandpa', 'nav_playground.html', 'en', slug='home', published=True)
         home.publish('en')

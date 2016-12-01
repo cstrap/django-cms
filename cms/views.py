@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
-from __future__ import with_statement
 
 from django.conf import settings
 from django.contrib.auth.views import redirect_to_login
 from django.core.urlresolvers import resolve, Resolver404, reverse
 from django.http import HttpResponseRedirect, HttpResponse
+from django.utils.cache import patch_cache_control
 from django.utils.http import urlquote
+from django.utils.timezone import now
 from django.utils.translation import get_language
 
 from cms.apphook_pool import apphook_pool
@@ -24,7 +25,7 @@ def details(request, slug):
     The main view of the Django-CMS! Takes a request and a slug, renders the
     page.
     """
-
+    response_timestamp = now()
     if get_cms_setting("PAGE_CACHE") and (
         not hasattr(request, 'toolbar') or (
             not request.toolbar.edit_mode and
@@ -34,9 +35,13 @@ def details(request, slug):
     ):
         cache_content = get_page_cache(request)
         if cache_content is not None:
-            content, headers = cache_content
+            content, headers, expires_datetime = cache_content
             response = HttpResponse(content)
             response._headers = headers
+            # Recalculate the max-age header for this cached response
+            max_age = int(
+                (expires_datetime - response_timestamp).total_seconds() + 0.5)
+            patch_cache_control(response, max_age=max_age)
             return response
 
     # Get a Page model object from the request
@@ -118,6 +123,17 @@ def details(request, slug):
         if not found and (not hasattr(request, 'toolbar') or not request.toolbar.redirect_url):
             # There is a page object we can't find a proper language to render it
             _handle_no_page(request, slug)
+    else:
+        page_path = page.get_absolute_url(language=current_language)
+        page_slug = page.get_path(language=current_language) or page.get_slug(language=current_language)
+
+        if slug and slug != page_slug and request.path[:len(page_path)] != page_path:
+            # The current language does not match it's slug.
+            #  Redirect to the current language.
+            if hasattr(request, 'toolbar') and request.user.is_staff and request.toolbar.edit_mode:
+                request.toolbar.redirect_url = page_path
+            else:
+                return HttpResponseRedirect(page_path)
 
     if apphook_pool.get_apphooks():
         # There are apphooks in the pool. Let's see if there is one for the
@@ -134,14 +150,15 @@ def details(request, slug):
         if app_urls and not skip_app:
             app = apphook_pool.get_apphook(app_urls)
             pattern_list = []
-            for urlpatterns in get_app_urls(app.urls):
-                pattern_list += urlpatterns
-            try:
-                view, args, kwargs = resolve('/', tuple(pattern_list))
-                return view(request, *args, **kwargs)
-            except Resolver404:
-                pass
-                # Check if the page has a redirect url defined for this language.
+            if app:
+                for urlpatterns in get_app_urls(app.get_urls(page, current_language)):
+                    pattern_list += urlpatterns
+                try:
+                    view, args, kwargs = resolve('/', tuple(pattern_list))
+                    return view(request, *args, **kwargs)
+                except Resolver404:
+                    pass
+    # Check if the page has a redirect url defined for this language.
     redirect_url = page.get_redirect(language=current_language)
     if redirect_url:
         if (is_language_prefix_patterns_used() and redirect_url[0] == "/"

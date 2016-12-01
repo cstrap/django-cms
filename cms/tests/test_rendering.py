@@ -1,20 +1,16 @@
 # -*- coding: utf-8 -*-
-from __future__ import with_statement
-
 from django.core.cache import cache
-from django.template import Template, RequestContext
 from django.test.utils import override_settings
 from sekizai.context import SekizaiContext
 
 from cms import plugin_rendering
 from cms.api import create_page, add_plugin
-from cms.cache.placeholder import get_placeholder_cache, get_placeholder_page_cache
+from cms.cache.placeholder import get_placeholder_cache
 from cms.models import Page, Placeholder, CMSPlugin
-from cms.plugin_rendering import render_plugins, PluginContext, render_placeholder_toolbar
+from cms.plugin_rendering import PluginContext
 from cms.test_utils.project.placeholderapp.models import Example1
 from cms.test_utils.testcases import CMSTestCase
-from cms.test_utils.util.context_managers import ChangeModel
-from cms.test_utils.util.mock import AttributeObject
+from cms.toolbar.toolbar import CMSToolbar
 from cms.views import details
 
 TEMPLATE_NAME = 'tests/rendering/base.html'
@@ -168,31 +164,21 @@ class RenderingTestCase(CMSTestCase):
         self.test_page5 = self.reload(p5.publisher_public)
         self.test_page6 = self.reload(p6.publisher_public)
 
-    def get_context(self, page, context_vars={}):
-        request = self.get_request(page)
-        return RequestContext(request, context_vars)
-
-    def get_request(self, page, *args, **kwargs):
-        request = super(RenderingTestCase, self).get_request(*args, **kwargs)
-        request.current_page = page
-        return request
-
     def strip_rendered(self, content):
         return content.strip().replace(u"\n", u"")
 
     @override_settings(CMS_TEMPLATES=[(TEMPLATE_NAME, '')])
     def render(self, template, page, context_vars={}):
-        c = self.get_context(page, context_vars)
-        t = Template(template)
-        r = t.render(c)
-        return self.strip_rendered(r)
+        request = self.get_request(page=page)
+        output = self.render_template_obj(template, context_vars, request)
+        return self.strip_rendered(output)
 
     @override_settings(CMS_TEMPLATES=[(TEMPLATE_NAME, '')])
     def test_details_view(self):
         """
         Tests that the `detail` view is working.
         """
-        response = details(self.get_request(self.test_page), '')
+        response = details(self.get_request(page=self.test_page), '')
         response.render()
         r = self.strip_rendered(response.content.decode('utf8'))
         self.assertEqual(r, u'|' + self.test_data['text_main'] + u'|' + self.test_data['text_sub'] + u'|')
@@ -206,22 +192,43 @@ class RenderingTestCase(CMSTestCase):
         Tests that default plugin context processors are working, that plugin processors and plugin context processors
         can be defined in settings and are working and that extra plugin context processors can be passed to PluginContext.
         """
+        from djangocms_text_ckeditor.cms_plugins import TextPlugin
+        from cms.plugin_pool import plugin_pool
+
+        instance = CMSPlugin.objects.all()[0].get_plugin_instance()[0]
+
+        load_from_string = self.load_template_from_string
+
+        @plugin_pool.register_plugin
+        class ProcessorTestPlugin(TextPlugin):
+            name = "Test Plugin"
+
+            def get_render_template(self, context, instance, placeholder):
+                t = u'{% load cms_tags %}' + \
+                    u'{{ plugin.counter }}|{{ plugin.instance.body }}|{{ test_passed_plugin_context_processor }}|' \
+                    u'{{ test_plugin_context_processor }}'
+                return load_from_string(t)
+
         def test_passed_plugin_context_processor(instance, placeholder, context):
             return {'test_passed_plugin_context_processor': 'test_passed_plugin_context_processor_ok'}
 
-        t = u'{% load cms_tags %}' + \
-            u'{{ plugin.counter }}|{{ plugin.instance.body }}|{{ test_passed_plugin_context_processor }}|{{ test_plugin_context_processor }}'
-        instance, plugin = CMSPlugin.objects.all()[0].get_plugin_instance()
-        instance.render_template = Template(t)
+        instance.plugin_type = 'ProcessorTestPlugin'
+        instance._inst = instance
+
         context = PluginContext({'original_context_var': 'original_context_var_ok'}, instance,
                                 self.test_placeholders['main'], processors=(test_passed_plugin_context_processor,))
         plugin_rendering._standard_processors = {}
-        c = render_plugins((instance,), context, self.test_placeholders['main'])
+
+        content_renderer = self.get_content_renderer()
+        c = content_renderer.render_plugins([instance], context, self.test_placeholders['main'])
         r = "".join(c)
-        self.assertEqual(r, u'1|' + self.test_data[
-            'text_main'] + '|test_passed_plugin_context_processor_ok|test_plugin_context_processor_ok|' +
-                            self.test_data['text_main'] + '|main|original_context_var_ok|test_plugin_processor_ok|' + self.test_data[
-                                'text_main'] + '|main|original_context_var_ok')
+        expected = (
+            self.test_data['text_main'] + '|test_passed_plugin_context_processor_ok|test_plugin_context_processor_ok|' +
+            self.test_data['text_main'] + '|main|original_context_var_ok|test_plugin_processor_ok|' +
+            self.test_data['text_main'] + '|main|original_context_var_ok'
+        )
+        expected = u'1|' + expected
+        self.assertEqual(r, expected)
         plugin_rendering._standard_processors = {}
 
     def test_placeholder(self):
@@ -330,14 +337,14 @@ class RenderingTestCase(CMSTestCase):
         ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
                        char_4="char_4")
         ex1.save()
-
+        request = self.get_request('/')
         add_plugin(ex1.placeholder, u"TextPlugin", u"en", body=render_uncached_placeholder_body)
 
         template = '{% load cms_tags %}<h1>{% render_uncached_placeholder ex1.placeholder %}</h1>'
 
-        cache_value_before = get_placeholder_cache(ex1.placeholder, 'en')
+        cache_value_before = get_placeholder_cache(ex1.placeholder, 'en', 1, request)
         self.render(template, self.test_page, {'ex1': ex1})
-        cache_value_after = get_placeholder_cache(ex1.placeholder, 'en')
+        cache_value_after = get_placeholder_cache(ex1.placeholder, 'en', 1, request)
 
         self.assertEqual(cache_value_before, cache_value_after)
         self.assertIsNone(cache_value_after)
@@ -350,14 +357,14 @@ class RenderingTestCase(CMSTestCase):
         ex1 = Example1(char_1="char_1", char_2="char_2", char_3="char_3",
                        char_4="char_4")
         ex1.save()
-
+        request = self.get_request('/')
         add_plugin(ex1.placeholder, u"TextPlugin", u"en", body=render_placeholder_body)
 
         template = '{% load cms_tags %}<h1>{% render_placeholder ex1.placeholder %}</h1>'
 
-        cache_value_before = get_placeholder_cache(ex1.placeholder, 'en')
+        cache_value_before = get_placeholder_cache(ex1.placeholder, 'en', 1, request)
         self.render(template, self.test_page, {'ex1': ex1})
-        cache_value_after = get_placeholder_cache(ex1.placeholder, 'en')
+        cache_value_after = get_placeholder_cache(ex1.placeholder, 'en', 1, request)
 
         self.assertNotEqual(cache_value_before, cache_value_after)
         self.assertIsNone(cache_value_before)
@@ -412,10 +419,11 @@ class RenderingTestCase(CMSTestCase):
         Tests that {% show_uncached_placeholder %} does not populate cache.
         """
         template = '{% load cms_tags %}<h1>{% show_uncached_placeholder "sub" test_page %}</h1>'
-
-        cache_value_before = get_placeholder_page_cache(self.test_page, 'en', self.test_page.site_id, 'sub')
+        placeholder = self.test_page.placeholders.get(slot='sub')
+        request = self.get_request(page=self.test_page)
+        cache_value_before = get_placeholder_cache(placeholder, 'en', 1, request)
         output = self.render(template, self.test_page, {'test_page': self.test_page})
-        cache_value_after = get_placeholder_page_cache(self.test_page, 'en', self.test_page.site_id, 'sub')
+        cache_value_after = get_placeholder_cache(placeholder, 'en', 1, request)
 
         self.assertEqual(output, '<h1>%s</h1>' % self.test_data['text_sub'])
         self.assertEqual(cache_value_before, cache_value_after)
@@ -531,31 +539,24 @@ class RenderingTestCase(CMSTestCase):
         r = self.render(t, self.test_page6)
         self.assertEqual(r, u'|' + self.test_data5['text_main'] + '|' + self.test_data6['text_sub'])
 
-    def test_extra_context_isolation(self):
-        with ChangeModel(self.test_page, template='extra_context.html'):
-            response = self.client.get(self.test_page.get_absolute_url())
-            # only test the swallower context, other items in response.context are throwaway
-            # contexts used for rendering templates fragments and templatetags
-            self.assertFalse('extra_width' in response.context[0])
-
     def test_render_placeholder_toolbar(self):
         placeholder = Placeholder()
         placeholder.slot = 'test'
         placeholder.pk = placeholder.id = 99
+        request = self.get_request(page=None)
+        request.toolbar = CMSToolbar(request)
+
+        content_renderer = self.get_content_renderer(request)
+
         context = SekizaiContext()
-        context['request'] = AttributeObject(
-            REQUEST={'language': 'en'},
-            GET=[],
-            session={},
-            path='/',
-            user=self.test_user,
-            current_page=None,
-            method='GET',
-        )
+        context['request'] = request
+        context['cms_content_renderer'] = content_renderer
+
         classes = [
             "cms-placeholder-%s" % placeholder.pk,
             'cms-placeholder',
         ]
-        output = render_placeholder_toolbar(placeholder, context, 'test', 'en')
+
+        output = content_renderer.render_editable_placeholder(placeholder, context, 'en')
         for cls in classes:
             self.assertTrue(cls in output, '%r is not in %r' % (cls, output))

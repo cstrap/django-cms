@@ -2,7 +2,6 @@
 from django.conf import settings
 from django.core.urlresolvers import resolve, Resolver404
 from django.http import Http404
-from django.template import RequestContext
 from django.template.response import TemplateResponse
 
 from cms import __version__
@@ -10,6 +9,7 @@ from cms.cache.page import set_page_cache
 from cms.models import Page
 from cms.utils import get_template_from_request
 from cms.utils.conf import get_cms_setting
+from cms.utils.page_permissions import user_can_change_page, user_can_view_page
 
 
 def render_page(request, page, current_language, slug):
@@ -18,17 +18,16 @@ def render_page(request, page, current_language, slug):
     """
     template_name = get_template_from_request(request, page, no_current_page=True)
     # fill the context
-    context = RequestContext(request)
+    context = {}
     context['lang'] = current_language
     context['current_page'] = page
-    context['has_change_permissions'] = page.has_change_permission(request)
-    context['has_view_permissions'] = page.has_view_permission(request)
+    context['has_change_permissions'] = user_can_change_page(request.user, page)
+    context['has_view_permissions'] = user_can_view_page(request.user, page)
 
     if not context['has_view_permissions']:
         return _handle_no_page(request, slug)
 
     response = TemplateResponse(request, template_name, context)
-
     response.add_post_render_callback(set_page_cache)
 
     # Add headers for X Frame Options - this really should be changed upon moving to class based views
@@ -53,7 +52,7 @@ def render_page(request, page, current_language, slug):
 
 
 def _handle_no_page(request, slug):
-    context = RequestContext(request)
+    context = {}
     context['cms_version'] = __version__
     context['cms_edit_on'] = get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
 

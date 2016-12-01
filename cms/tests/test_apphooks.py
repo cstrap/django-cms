@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
-from __future__ import with_statement
 import sys
 
 from django.contrib.admin.models import CHANGE, LogEntry
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
-from django.core.urlresolvers import clear_url_caches, reverse, resolve
+from django.core.cache import cache
+from django.core.urlresolvers import clear_url_caches, reverse, resolve, NoReverseMatch
 from django.test.utils import override_settings
 from django.utils import six
 from django.utils.timezone import now
@@ -15,24 +15,25 @@ from cms.api import create_page, create_title
 from cms.app_base import CMSApp
 from cms.apphook_pool import apphook_pool
 from cms.appresolver import applications_page_check, clear_app_resolvers, get_app_patterns
-from cms.cms_toolbars import PlaceholderToolbar
 from cms.models import Title, Page
 from cms.test_utils.project.placeholderapp.models import Example1
-from cms.test_utils.testcases import CMSTestCase, ClearURLs
+from cms.test_utils.testcases import CMSTestCase
 from cms.tests.test_menu_utils import DumbPageLanguageUrl
 from cms.toolbar.toolbar import CMSToolbar
 from cms.utils.conf import get_cms_setting
 from cms.utils.i18n import force_language
 from cms.utils.urlutils import admin_reverse
+from menus.menu_pool import menu_pool
 from menus.utils import DefaultLanguageChanger
 
 
 APP_NAME = 'SampleApp'
 NS_APP_NAME = 'NamespacedApp'
 APP_MODULE = "cms.test_utils.project.sampleapp.cms_apps"
+MENU_MODULE = "cms.test_utils.project.sampleapp.cms_menus"
 
 
-class ApphooksTestCase(ClearURLs, CMSTestCase):
+class ApphooksTestCase(CMSTestCase):
     def setUp(self):
         clear_app_resolvers()
         clear_url_caches()
@@ -64,6 +65,7 @@ class ApphooksTestCase(ClearURLs, CMSTestCase):
             # '...',
             'cms.test_utils.project.second_cms_urls_for_apphook_tests',
             'cms.test_utils.project.urls_for_apphook_tests',
+            APP_MODULE,
             settings.ROOT_URLCONF,
         ]
 
@@ -139,7 +141,7 @@ class ApphooksTestCase(ClearURLs, CMSTestCase):
         self.apphook_clear()
         hooks = apphook_pool.get_apphooks()
         app_names = [hook[0] for hook in hooks]
-        self.assertEqual(len(hooks), 6)
+        self.assertEqual(len(hooks), 7)
         self.assertIn(NS_APP_NAME, app_names)
         self.assertIn(APP_NAME, app_names)
         self.apphook_clear()
@@ -365,12 +367,16 @@ class ApphooksTestCase(ClearURLs, CMSTestCase):
 
     @override_settings(ROOT_URLCONF='cms.test_utils.project.second_urls_for_apphook_tests')
     def test_get_i18n_apphook_with_explicit_current_app(self):
+        self.apphook_clear()
         titles = self.create_base_structure(NS_APP_NAME, ['en', 'de'], 'instance_1')
         public_de_title = titles[1]
         de_title = Title.objects.get(page=public_de_title.page.publisher_draft, language="de")
         de_title.slug = "de"
         de_title.save()
         de_title.page.publish('de')
+
+        self.reload_urls()
+        self.apphook_clear()
 
         page2 = create_page("page2", "nav_playground.html",
                             "en", created_by=self.superuser, published=True, parent=de_title.page.parent,
@@ -393,6 +399,7 @@ class ApphooksTestCase(ClearURLs, CMSTestCase):
             reverse('namespaced_app_ns:current-app', current_app="instance_1")
             reverse('namespaced_app_ns:current-app', current_app="instance_2")
             reverse('namespaced_app_ns:current-app')
+        self.apphook_clear()
 
     @override_settings(ROOT_URLCONF='cms.test_utils.project.second_urls_for_apphook_tests')
     def test_apphook_include_extra_parameters(self):
@@ -521,6 +528,28 @@ class ApphooksTestCase(ClearURLs, CMSTestCase):
         self.assertIsNotNone(TestApp2)
 
     @override_settings(ROOT_URLCONF='cms.test_utils.project.second_urls_for_apphook_tests')
+    def test_apphook_csrf_exempt_endpoint(self):
+        self.create_base_structure(NS_APP_NAME, 'en', 'instance_ns')
+
+        client = self.client_class(enforce_csrf_checks=True)
+
+        with force_language("en"):
+            path = reverse('namespaced_app_ns:sample-exempt')
+
+        response = client.post(path)
+
+        # Assert our POST request went through
+        self.assertEqual(response.status_code, 200)
+
+        with force_language("en"):
+            path = reverse('namespaced_app_ns:sample-account')
+
+        response = client.post(path)
+
+        # Assert our POST request did not go through
+        self.assertEqual(response.status_code, 403)
+
+    @override_settings(ROOT_URLCONF='cms.test_utils.project.second_urls_for_apphook_tests')
     def test_toolbar_current_app_namespace(self):
         self.create_base_structure(NS_APP_NAME, 'en', 'instance_ns')
         with force_language("en"):
@@ -596,6 +625,9 @@ class ApphooksTestCase(ClearURLs, CMSTestCase):
         apphooks = (
             'cms.test_utils.project.placeholderapp.cms_apps.Example1App',
         )
+
+        switcher_id = 'Mode Switcher'
+
         with self.settings(CMS_APPHOOKS=apphooks, ROOT_URLCONF='cms.test_utils.project.placeholderapp_urls'):
             self.create_base_structure('Example1App', 'en')
             ex1 = Example1.objects.create(char_1='1', char_2='2', char_3='3', char_4='4', date_field=now())
@@ -604,47 +636,49 @@ class ApphooksTestCase(ClearURLs, CMSTestCase):
             self.user = self._create_user('admin_staff', True, True)
             with self.login_user_context(self.user):
                 response = self.client.get(path+"?edit")
-            toolbar = CMSToolbar(response.context['request'])
-            toolbar.populate()
-            placeholder_toolbar = PlaceholderToolbar(response.context['request'], toolbar, True, path)
-            placeholder_toolbar.populate()
-            placeholder_toolbar.init_placeholders_from_request()
-            placeholder_toolbar.add_structure_mode()
-            self.assertEqual(len(placeholder_toolbar.toolbar.get_right_items()), 1)
+
+            request = response.context['request']
+            toolbar = request.toolbar
+            items = toolbar.get_right_items()
+            switchers = [item.identifier for item in items
+                         if getattr(item, 'identifier', '') == switcher_id]
+            self.assertEqual(len(switchers), 1)
 
             self.user = self._create_user('staff', True, False)
             with self.login_user_context(self.user):
                 response = self.client.get(path+"?edit")
-            response.context['request'].user = get_user_model().objects.get(pk=self.user.pk)
-            toolbar = CMSToolbar(response.context['request'])
-            toolbar.populate()
-            placeholder_toolbar = PlaceholderToolbar(response.context['request'], toolbar, True, path)
-            placeholder_toolbar.populate()
-            placeholder_toolbar.init_placeholders_from_request()
-            placeholder_toolbar.add_structure_mode()
-            self.assertEqual(len(placeholder_toolbar.toolbar.get_right_items()), 0)
+
+            request = response.context['request']
+            request.user = get_user_model().objects.get(pk=self.user.pk)
+            toolbar = request.toolbar
+            items = toolbar.get_right_items()
+            switchers = [item.identifier for item in items
+                         if getattr(item, 'identifier', '') == switcher_id]
+            self.assertEqual(len(switchers), 0)
 
             self.user.user_permissions.add(Permission.objects.get(codename='change_example1'))
             with self.login_user_context(self.user):
                 response = self.client.get(path+"?edit")
-            response.context['request'].user = get_user_model().objects.get(pk=self.user.pk)
-            toolbar = CMSToolbar(response.context['request'])
-            toolbar.populate()
-            placeholder_toolbar = PlaceholderToolbar(response.context['request'], toolbar, True, path)
-            placeholder_toolbar.populate()
-            placeholder_toolbar.init_placeholders_from_request()
-            placeholder_toolbar.add_structure_mode()
-            self.assertEqual(len(placeholder_toolbar.toolbar.get_right_items()), 0)
 
-            permission = Permission.objects.get(codename='use_structure')
-            self.user.user_permissions.add(permission)
+            request = response.context['request']
+            request.user = get_user_model().objects.get(pk=self.user.pk)
+            toolbar = request.toolbar
+            items = toolbar.get_right_items()
+            switchers = [item.identifier for item in items
+                         if getattr(item, 'identifier', '') == switcher_id]
+            self.assertEqual(len(switchers), 0)
 
-            response.context['request'].user = get_user_model().objects.get(pk=self.user.pk)
-            placeholder_toolbar = PlaceholderToolbar(response.context['request'], toolbar, True, path)
-            placeholder_toolbar.populate()
-            placeholder_toolbar.init_placeholders_from_request()
-            placeholder_toolbar.add_structure_mode()
-            self.assertEqual(len(placeholder_toolbar.toolbar.get_right_items()), 1)
+            self.user.user_permissions.add(Permission.objects.get(codename='use_structure'))
+            with self.login_user_context(self.user):
+                response = self.client.get(path + "?edit")
+
+            request = response.context['request']
+            request.user = get_user_model().objects.get(pk=self.user.pk)
+            toolbar = request.toolbar
+            items = toolbar.get_right_items()
+            switchers = [item.identifier for item in items
+                         if getattr(item, 'identifier', '') == switcher_id]
+            self.assertEqual(len(switchers), 1)
 
             self.user = None
 
@@ -691,8 +725,86 @@ class ApphooksTestCase(ClearURLs, CMSTestCase):
 
             self.apphook_clear()
 
+    @override_settings(ROOT_URLCONF='cms.test_utils.project.second_urls_for_apphook_tests')
+    def test_get_apps(self):
+        """
+        Check that urlconf are dynamically loaded according to the different page the apphook is
+        attached to
+        """
+        titles = self.create_base_structure('VariableUrlsApp', ['en', 'de'])
+        titles[0].page.reverse_id = 'page1'
+        titles[0].page.save()
 
-class ApphooksPageLanguageUrlTestCase(ClearURLs, CMSTestCase):
+        self.reload_urls()
+
+        # only one urlconf is configured given that only one page is created
+        with force_language('de'):
+            reverse('extra_first')
+            with self.assertRaises(NoReverseMatch):
+                reverse('sample2-root')
+
+        self.reload_urls()
+        self.apphook_clear()
+
+        page2 = create_page('page2', 'nav_playground.html',
+                            'en', created_by=self.superuser, published=True,
+                            parent=titles[0].page.parent,
+                            apphook='VariableUrlsApp', reverse_id='page2')
+        create_title('de', 'de_title', page2, slug='slug')
+        page2.publish('de')
+
+        self.reload_urls()
+
+        with force_language('de'):
+            reverse('sample2-root')
+            reverse('extra_first')
+
+        self.apphook_clear()
+
+    @override_settings(ROOT_URLCONF='cms.test_utils.project.second_urls_for_apphook_tests')
+    def test_get_menus(self):
+        """
+        Check that menus are dynamically loaded according to the different page the apphook is
+        attached to
+        """
+        titles = self.create_base_structure('VariableUrlsApp', ['en', 'de'])
+        titles[0].page.reverse_id = 'page1'
+        titles[0].page.save()
+        cache.clear()
+        self.reload_urls()
+        menu_pool.discover_menus()
+        cache.clear()
+
+        request = self.get_request('/')
+        nodes = menu_pool.get_nodes(request)
+        nodes_urls = [node.url for node in nodes]
+        self.assertTrue(reverse('sample-account') in nodes_urls)
+        self.assertFalse('/en/child_page/page2/' in nodes_urls)
+
+        self.reload_urls()
+        self.apphook_clear()
+
+        cache.clear()
+        self.reload_urls()
+
+        page2 = create_page('page2', 'nav_playground.html',
+                            'en', created_by=self.superuser, published=True,
+                            parent=titles[0].page.get_draft_object().parent,
+                            in_navigation=True,
+                            apphook='VariableUrlsApp', reverse_id='page2')
+        create_title('de', 'de_title', page2, slug='slug')
+        page2.publish('de')
+        request = self.get_request('/page2/')
+        nodes = menu_pool.get_nodes(request)
+        nodes_urls = [node.url for node in nodes]
+        self.assertTrue(reverse('sample-account') in nodes_urls)
+        self.assertTrue(reverse('sample2-root') in nodes_urls)
+        self.assertTrue('/static/fresh/' in nodes_urls)
+
+        self.apphook_clear()
+
+
+class ApphooksPageLanguageUrlTestCase(CMSTestCase):
     def setUp(self):
         clear_app_resolvers()
         clear_url_caches()

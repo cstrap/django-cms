@@ -7,11 +7,18 @@ import warnings
 
 from django.conf import settings
 from django.core.urlresolvers import NoReverseMatch
-from django.core.exceptions import ValidationError, ObjectDoesNotExist
+from django.core.exceptions import ObjectDoesNotExist
 from django.db import models
-from django.db.models import signals, Model
-from django.db.models.base import model_unpickle, ModelBase
-from django.db.models.query_utils import DeferredAttribute
+from django.db.models import signals, Model, ManyToManyField
+from django.db.models.base import ModelBase
+try:
+    # Django >= 1.8, < 1.9
+    from django.db.models.fields.related import (
+        ReverseSingleRelatedObjectDescriptor as ForwardManyToOneDescriptor
+    )
+except ImportError:
+    # Django >= 1.9
+    from django.db.models.fields.related import ForwardManyToOneDescriptor
 from django.utils import six, timezone
 from django.utils.encoding import force_text, python_2_unicode_compatible
 from django.utils.safestring import mark_safe
@@ -20,7 +27,6 @@ from django.utils.translation import ugettext_lazy as _
 
 from cms.exceptions import DontUsePageAttributeWarning
 from cms.models.placeholdermodel import Placeholder
-from cms.plugin_rendering import PluginContext, render_plugin
 from cms.utils import get_cms_setting
 from cms.utils.helpers import reversion_register
 from cms.utils.urlutils import admin_reverse
@@ -35,6 +41,67 @@ class BoundRenderMeta(object):
         self.text_enabled = getattr(meta, 'text_enabled', False)
 
 
+class ForwardOneToOneDescriptor(ForwardManyToOneDescriptor):
+    """
+    Accessor to the related object on the forward side
+    of a one-to-one relation.
+
+    In the example::
+
+        class MyPlugin(CMSPlugin):
+            cmsplugin_ptr = ForeignKey(CMSPlugin, parent_link=True)
+
+    ``myplugin.cmsplugin_ptr`` is a ``ForwardOneToOneDescriptor`` instance.
+    """
+
+    # This class is necessary to backport the following Django fix
+    # https://github.com/django/django/commit/38575b007a722d6af510ea46d46393a4cda9ca29
+    # into the CMS.
+
+    def get_inherited_object(self, instance):
+        """
+        Returns an instance of the subclassed model
+        in a multi-table inheritance scenario.
+        """
+        # This is an exact copy of the code for get_object()
+        # provided in the commit above.
+        deferred = instance.get_deferred_fields()
+        # Because it's a parent link, all the data is available in the
+        # instance, so populate the parent model with this data.
+        rel_model = self.field.rel.model
+        fields = [field.attname for field in rel_model._meta.concrete_fields]
+
+        # If any of the related model's fields are deferred, fallback to
+        # fetching all fields from the related model. This avoids a query
+        # on the related model for every deferred field.
+        if not any(field in fields for field in deferred):
+            kwargs = {field: getattr(instance, field) for field in fields}
+            return rel_model(**kwargs)
+        return
+
+    def __get__(self, instance, instance_type=None):
+        if instance is None:
+            return self
+
+        if not hasattr(instance, self.cache_name):
+            # No cached object is present on the instance.
+            val = self.field.get_local_related_value(instance)
+
+            if None not in val:
+                # Fetch the inherited object instance
+                # using values from the current instance.
+                # This avoids an extra db call because we already
+                # have the data.
+                # This can be None if a field from the base class (CMSPlugin)
+                # was deferred.
+                rel_obj = self.get_inherited_object(instance)
+
+                if not rel_obj is None:
+                    # Populate the internal relationship cache.
+                    setattr(instance, self.cache_name, rel_obj)
+        return super(ForwardOneToOneDescriptor, self).__get__(instance, instance_type)
+
+
 class PluginModelBase(ModelBase):
     """
     Metaclass for all CMSPlugin subclasses. This class should not be used for
@@ -42,11 +109,52 @@ class PluginModelBase(ModelBase):
     """
 
     def __new__(cls, name, bases, attrs):
+        super_new = super(PluginModelBase, cls).__new__
         # remove RenderMeta from the plugin class
         attr_meta = attrs.pop('RenderMeta', None)
 
+        # Only care about subclasses of CMSPlugin
+        # (excluding CMSPlugin itself).
+        parents = [b for b in bases if isinstance(b, PluginModelBase)]
+
+        if parents and 'cmsplugin_ptr' not in attrs:
+            # The current class subclasses from CMSPlugin
+            # and has not defined a cmsplugin_ptr field.
+            meta = attrs.get('Meta', None)
+            proxy = getattr(meta, 'proxy', False)
+
+            # True if any of the base classes defines a cmsplugin_ptr field.
+            field_is_inherited = any(hasattr(parent, 'cmsplugin_ptr') for parent in parents)
+
+            # Skip proxied classes which are not autonomous ORM objects
+            # We don't skip abstract classes because when a plugin
+            # inherits from an abstract class, we need to make sure the
+            # abstract class gets the correct related name, otherwise the
+            # plugin inherits the default related name and then the
+            # field_is_inherited check above will prevent us from adding
+            # the fixed related name.
+            if not proxy and not field_is_inherited:
+                # It's important to set the field as if it was set
+                # manually in the model class.
+                # This is because Django will do a lot of operations
+                # under the hood to set the forward and reverse relations.
+                attrs['cmsplugin_ptr'] = models.OneToOneField(
+                    to='cms.CMSPlugin',
+                    name='cmsplugin_ptr',
+                    related_name='%(app_label)s_%(class)s',
+                    auto_created=True,
+                    parent_link=True,
+                )
+
         # create a new class (using the super-metaclass)
-        new_class = super(PluginModelBase, cls).__new__(cls, name, bases, attrs)
+        new_class = super_new(cls, name, bases, attrs)
+
+        # Skip abstract and proxied classes which are not autonomous ORM objects
+        if parents and not new_class._meta.abstract and not new_class._meta.proxy:
+            # Use our patched descriptor regardless of how the one to one
+            # relationship was defined.
+            parent_link_field = new_class._meta.get_field('cmsplugin_ptr')
+            setattr(new_class, 'cmsplugin_ptr', ForwardOneToOneDescriptor(parent_link_field))
 
         # if there is a RenderMeta in attrs, use this one
         # else try to use the one from the superclass (if present)
@@ -75,7 +183,7 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
     '''
     placeholder = models.ForeignKey(Placeholder, editable=False, null=True)
     parent = models.ForeignKey('self', blank=True, null=True, editable=False)
-    position = models.PositiveSmallIntegerField(_("position"), blank=True, null=True, editable=False)
+    position = models.PositiveSmallIntegerField(_("position"), default = 0, editable=False)
     language = models.CharField(_("language"), max_length=15, blank=False, db_index=True, editable=False)
     plugin_type = models.CharField(_("plugin_name"), max_length=50, db_index=True, editable=False)
     creation_date = models.DateTimeField(_("creation date"), editable=False, default=timezone.now)
@@ -90,25 +198,6 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
         index = 0
         total = 1
         text_enabled = False
-
-    def __reduce__(self):
-        """
-        Provide pickling support. Normally, this just dispatches to Python's
-        standard handling. However, for models with deferred field loading, we
-        need to do things manually, as they're dynamically created classes and
-        only module-level classes can be pickled by the default path.
-        """
-        data = self.__dict__
-        # The obvious thing to do here is to invoke super().__reduce__()
-        # for the non-deferred case. Don't do that.
-        # On Python 2.4, there is something wierd with __reduce__,
-        # and as a result, the super call will cause an infinite recursion.
-        # See #10547 and #12121.
-        deferred_fields = [f for f in self._meta.fields
-                           if isinstance(self.__class__.__dict__.get(f.attname),
-                                         DeferredAttribute)]
-        model = self._meta.proxy_for_model
-        return (model_unpickle, (model, deferred_fields), data)
 
     def __str__(self):
         return force_text(self.pk)
@@ -162,43 +251,24 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
         return self._inst, plugin
 
     def render_plugin(self, context=None, placeholder=None, admin=False, processors=None):
-        instance, plugin = self.get_plugin_instance()
-        if instance and not (admin and not plugin.admin_preview):
-            if not placeholder or not isinstance(placeholder, Placeholder):
-                placeholder = instance.placeholder
-            placeholder_slot = placeholder.slot
-            current_app = context.current_app if context else None
-            context = PluginContext(context, instance, placeholder, current_app=current_app)
-            context = plugin.render(context, instance, placeholder_slot)
-            request = context.get('request', None)
-            page = None
-            if request:
-                page = request.current_page
-            plugin.cms_plugin_instance = instance
-            context['allowed_child_classes'] = plugin.get_child_classes(placeholder_slot, page)
-            context['allowed_parent_classes'] = plugin.get_parent_classes(placeholder_slot, page)
-            if plugin.render_plugin:
-                template = plugin._get_render_template(context, instance, placeholder)
-                if not template:
-                    raise ValidationError("plugin has no render_template: %s" % plugin.__class__)
-            else:
-                template = None
-            return render_plugin(context, instance, placeholder, template, processors, context.current_app)
-        else:
-            from cms.middleware.toolbar import toolbar_plugin_processor
+        if not context or not 'cms_content_renderer' in context:
+            return ''
 
-            if processors and toolbar_plugin_processor in processors:
-                if not placeholder:
-                    placeholder = self.placeholder
-                current_app = context.current_app if context else None
-                context = PluginContext(context, self, placeholder, current_app=current_app)
-                template = None
-                return render_plugin(context, self, placeholder, template, processors, context.current_app)
-        return ""
+        if not isinstance(placeholder, Placeholder):
+            # Sadly this method blindly accepted a placeholder slot.
+            placeholder = self.placeholder
+
+        content_renderer = context['cms_content_renderer']
+        content = content_renderer.render_plugin(
+            instance=self,
+            context=context,
+            placeholder=placeholder,
+        )
+        return content
 
     def get_media_path(self, filename):
         pages = self.placeholder.page_set.all()
-        if pages.count():
+        if pages.exists():
             return pages[0].get_media_path(filename)
         else:  # django 1.0.2 compatibility
             today = date.today()
@@ -227,6 +297,12 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
         instance, plugin = self.get_plugin_instance()
         return force_text(plugin.icon_alt(instance)) if instance else u''
 
+    def update(self, refresh=False, **fields):
+        CMSPlugin.objects.filter(pk=self.pk).update(**fields)
+        if refresh:
+            return self.reload()
+        return
+
     def save(self, no_signals=False, *args, **kwargs):
         if not self.depth:
             if self.parent_id or self.parent:
@@ -238,7 +314,7 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
                                                              placeholder_id=self.placeholder_id).count()
                 self.add_root(instance=self)
             return
-        super(CMSPlugin, self).save()
+        super(CMSPlugin, self).save(*args, **kwargs)
 
     def reload(self):
         return CMSPlugin.objects.get(pk=self.pk)
@@ -246,6 +322,7 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
     def move(self, target, pos=None):
         super(CMSPlugin, self).move(target, pos)
         self = self.reload()
+
         try:
             new_pos = max(CMSPlugin.objects.filter(parent_id=self.parent_id,
                                                    placeholder_id=self.placeholder_id,
@@ -253,9 +330,7 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
         except ValueError:
             # This is the first plugin in the set
             new_pos = 0
-        self.position = new_pos
-        self.save()
-        return self.reload()
+        return self.update(refresh=True, position=new_pos)
 
     def set_base_attr(self, plugin):
         for attr in ['parent_id', 'placeholder', 'language', 'plugin_type', 'creation_date', 'depth', 'path',
@@ -346,7 +421,7 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
                 order = CMSPlugin.objects.filter(
                         placeholder_id=placeholder.pk, language=language,
                         parent_id__isnull=True
-                    ).order_by('position').values_list('pk', flat=True)
+                    ).order_by('position', 'path').values_list('pk', flat=True)
                 reorder_plugins(placeholder, None, language, order)
 
                 for plugin in CMSPlugin.objects.filter(
@@ -354,7 +429,7 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
                         language=language).order_by('depth', 'path'):
                     order = CMSPlugin.objects.filter(
                             parent_id=plugin.pk
-                        ).order_by('position').values_list('pk', flat=True)
+                        ).order_by('position', 'path').values_list('pk', flat=True)
                     reorder_plugins(placeholder, plugin.pk, language, order)
 
     def post_copy(self, old_instance, new_old_ziplist):
@@ -371,13 +446,14 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
         """
         pass
 
-    def has_change_permission(self, request):
-        page = self.placeholder.page if self.placeholder else None
-        if page:
-            return page.has_change_permission(request)
-        elif self.placeholder:
-            return self.placeholder.has_change_permission(request)
-        return False
+    @classmethod
+    def _get_related_objects(cls):
+        fields = cls._meta._get_fields(
+            forward=False, reverse=True,
+            include_parents=True,
+            include_hidden=False,
+        )
+        return list(obj for obj in fields if not isinstance(obj.field, ManyToManyField))
 
     def get_position_in_placeholder(self):
         """
@@ -463,6 +539,43 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
         else:
             super(CMSPlugin, self).delete(*args, **kwargs)
 
+    def get_action_urls(self, js_compat=True):
+        if js_compat:
+            # TODO: Remove this condition
+            # once the javascript files have been refactored
+            # to use the new naming schema (ending in _url).
+            data = {
+                'edit_plugin': self.get_edit_url(),
+                'add_plugin': self.get_add_url(),
+                'delete_plugin': self.get_delete_url(),
+                'move_plugin': self.get_move_url(),
+                'copy_plugin': self.get_copy_url(),
+            }
+        else:
+            data = {
+                'edit_url': self.get_edit_url(),
+                'add_url': self.get_add_url(),
+                'delete_url': self.get_delete_url(),
+                'move_url': self.get_move_url(),
+                'copy_url': self.get_copy_url(),
+            }
+        return data
+
+    def get_add_url(self):
+        return self.placeholder.get_add_url()
+
+    def get_edit_url(self):
+        return self.placeholder.get_edit_url(self.pk)
+
+    def get_delete_url(self):
+        return self.placeholder.get_delete_url(self.pk)
+
+    def get_move_url(self):
+        return self.placeholder.get_move_url()
+
+    def get_copy_url(self):
+        return self.placeholder.get_copy_url()
+
     @property
     def add_url(self):
         """
@@ -498,12 +611,14 @@ class CMSPlugin(six.with_metaclass(PluginModelBase, MP_Node)):
         """
         return None
 
+
 reversion_register(CMSPlugin)
 
 
 def get_plugin_media_path(instance, filename):
     """
-    Django 1.7 requires that unbound function used in fields' definitions are defined outside the parent class
+    Django requires that unbound function used in fields' definitions to be
+    defined outside the parent class.
      (see https://docs.djangoproject.com/en/dev/topics/migrations/#serializing-values)
     This function is used withing field definition:
 

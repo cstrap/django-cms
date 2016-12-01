@@ -1,17 +1,16 @@
 # -*- coding: utf-8 -*-
 
-from itertools import chain
-
 from django.contrib.admin.templatetags.admin_static import static
 from django.contrib.auth import get_permission_codename
 from django.contrib.sites.models import Site
 from django.core.urlresolvers import NoReverseMatch, reverse_lazy
 from django.forms.widgets import Select, MultiWidget, TextInput
 from django.utils.encoding import force_text
+from django.utils.html import escape, escapejs
 from django.utils.safestring import mark_safe
 from django.utils.translation import ugettext as _
 
-from cms.utils.urlutils import admin_reverse
+from cms.utils.urlutils import admin_reverse, static_with_version
 from cms.forms.utils import get_site_choices, get_page_choices
 from cms.models import Page, PageUser
 
@@ -23,10 +22,7 @@ class PageSelectWidget(MultiWidget):
 
     class Media:
         js = (
-            'cms/js/modules/jquery.noconflict.pre.js',
-            'cms/js/dist/bundle.admin.base.min.js',
-            'cms/js/widgets/forms.pageselectwidget.js',
-            'cms/js/modules/jquery.noconflict.post.js'
+            static_with_version('cms/js/dist/bundle.forms.pageselectwidget.min.js'),
         )
 
     def __init__(self, site_choices=None, page_choices=None, attrs=None):
@@ -101,10 +97,12 @@ class PageSelectWidget(MultiWidget):
                 final_attrs = dict(final_attrs, id='%s_%s' % (id_, i))
             output.append(widget.render(name + '_%s' % i, widget_value, final_attrs))
         output.append(r'''<script type="text/javascript">
-            CMS.$(function () {
-                new CMS.PageSelectWidget({
-                    name: '%(name)s'
-                });
+            var CMS = window.CMS || {};
+
+            CMS.Widgets = CMS.Widgets || {};
+            CMS.Widgets._pageSelectWidgets = CMS.Widgets._pageSelectWidgets || [];
+            CMS.Widgets._pageSelectWidgets.push({
+                name: '%(name)s'
             });
         </script>''' % {
             'name': name
@@ -125,9 +123,7 @@ class PageSmartLinkWidget(TextInput):
             )
         }
         js = (
-            'cms/js/dist/bundle.admin.base.min.js',
-            'cms/js/select2/select2.js',
-            'cms/js/widgets/forms.pagesmartlinkwidget.js',
+            static_with_version('cms/js/dist/bundle.forms.pagesmartlinkwidget.min.js'),
         )
 
     def __init__(self, attrs=None, ajax_view=None):
@@ -147,13 +143,15 @@ class PageSmartLinkWidget(TextInput):
         id_ = final_attrs.get('id', None)
 
         output = [r'''<script type="text/javascript">
-            CMS.$(function () {
-                new CMS.PageSmartLinkWidget({
-                    id: '%(element_id)s',
-                    text: '%(placeholder_text)s',
-                    lang: '%(language_code)s',
-                    url: '%(ajax_url)s'
-                });
+            var CMS = window.CMS || {};
+
+            CMS.Widgets = CMS.Widgets || {};
+            CMS.Widgets._pageSmartLinkWidgets = CMS.Widgets._pageSmartLinkWidgets || [];
+            CMS.Widgets._pageSmartLinkWidgets.push({
+                id: '%(element_id)s',
+                text: '%(placeholder_text)s',
+                lang: '%(language_code)s',
+                url: '%(ajax_url)s'
             });
         </script>''' % {
             'element_id': id_,
@@ -175,7 +173,7 @@ class UserSelectAdminWidget(Select):
     attribute.
     """
     def render(self, name, value, attrs=None, choices=()):
-        output = [super(UserSelectAdminWidget, self).render(name, value, attrs, choices)]
+        output = [super(UserSelectAdminWidget, self).render(name, value, attrs)]
         if hasattr(self, 'user') and (self.user.is_superuser or \
             self.user.has_perm(PageUser._meta.app_label + '.' + get_permission_codename('add', PageUser._meta))):
             # append + icon
@@ -194,10 +192,7 @@ class AppHookSelect(Select):
 
     class Media:
         js = (
-            'cms/js/modules/jquery.noconflict.pre.js',
-            'cms/js/dist/bundle.admin.base.min.js',
-            'cms/js/widgets/forms.apphookselect.js',
-            'cms/js/modules/jquery.noconflict.post.js'
+            static_with_version('cms/js/dist/bundle.forms.apphookselect.min.js'),
         )
 
     def __init__(self, attrs=None, choices=(), app_namespaces={}):
@@ -217,7 +212,7 @@ class AppHookSelect(Select):
             selected_html = ''
 
         if option_value in self.app_namespaces:
-            data_html = mark_safe(' data-namespace="%s"' % self.app_namespaces[option_value])
+            data_html = mark_safe(' data-namespace="%s"' % escape(self.app_namespaces[option_value]))
         else:
             data_html = ''
 
@@ -227,13 +222,6 @@ class AppHookSelect(Select):
             data_html,
             force_text(option_label),
         )
-
-    def render_options(self, choices, selected_choices):
-        selected_choices = set(force_text(v) for v in selected_choices)
-        output = []
-        for option_value, option_label in chain(self.choices, choices):
-            output.append(self.render_option(selected_choices, option_value, option_label))
-        return '\n'.join(output)
 
 
 class ApplicationConfigSelect(Select):
@@ -250,10 +238,7 @@ class ApplicationConfigSelect(Select):
 
     class Media:
         js = (
-            'cms/js/modules/jquery.noconflict.pre.js'
-            'cms/js/dist/bundle.admin.base.min.js',
-            'cms/js/widgets/forms.apphookselect.js',
-            'cms/js/modules/jquery.noconflict.post.js'
+            static_with_version('cms/js/dist/bundle.forms.apphookselect.min.js'),
         )
 
     def __init__(self, attrs=None, choices=(), app_configs={}):
@@ -261,11 +246,11 @@ class ApplicationConfigSelect(Select):
         super(ApplicationConfigSelect, self).__init__(attrs, choices)
 
     def render(self, name, value, attrs=None, choices=()):
-        output = [super(ApplicationConfigSelect, self).render(name, value, attrs, choices)]
+        output = list(super(ApplicationConfigSelect, self).render(name, value, attrs))
         output.append('<script>\n')
         output.append('var apphooks_configuration = {\n')
         for application, cms_app in self.app_configs.items():
-            output.append("'%s': [%s]," % (application, ",".join(["['%s', '%s']" % (config.pk, force_text(config)) for config in cms_app.get_configs()])))
+            output.append("'%s': [%s]," % (application, ",".join(["['%s', '%s']" % (config.pk, escapejs(escape(config))) for config in cms_app.get_configs()])))  # noqa
         output.append('\n};\n')
         output.append('var apphooks_configuration_url = {\n')
         for application, cms_app in self.app_configs.items():

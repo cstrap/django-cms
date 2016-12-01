@@ -1,6 +1,4 @@
 # -*- coding: utf-8 -*-
-from __future__ import with_statement
-
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import AnonymousUser, Group
 from django.contrib.sites.models import Site
@@ -13,7 +11,10 @@ from cms.models import ACCESS_DESCENDANTS, ACCESS_CHILDREN, ACCESS_PAGE
 from cms.models import ACCESS_PAGE_AND_CHILDREN, ACCESS_PAGE_AND_DESCENDANTS
 from cms.models.permissionmodels import GlobalPagePermission, PagePermission
 from cms.test_utils.testcases import CMSTestCase
+from cms.utils.page_permissions import user_can_view_page
+
 from menus.menu_pool import menu_pool
+
 
 __all__ = [
     'ViewPermissionTreeBugTests',
@@ -183,16 +184,15 @@ class ViewPermissionTests(CMSTestCase):
         self.assertEqual(response.status_code, 404)
 
     def assertViewAllowed(self, page, user):
-        request = self.get_request(user, page)
-        self.assertTrue(page.has_view_permission(request))
+        self.assertTrue(user_can_view_page(user, page))
 
     def assertViewNotAllowed(self, page, user):
-        request = self.get_request(user, page)
-        self.assertFalse(page.has_view_permission(request))
+        self.assertFalse(user_can_view_page(user, page))
 
     def assertInMenu(self, page, user):
         request = self.get_request(user, page)
-        nodes = menu_pool.get_nodes(request)
+        menu_renderer = menu_pool.get_renderer(request)
+        nodes = menu_renderer.get_nodes()
         target_url = page.get_absolute_url()
         found_in_menu = False
         for node in nodes:
@@ -203,7 +203,8 @@ class ViewPermissionTests(CMSTestCase):
 
     def assertNotInMenu(self, page, user):
         request = self.get_request(user, page)
-        nodes = menu_pool.get_nodes(request)
+        menu_renderer = menu_pool.get_renderer(request)
+        nodes = menu_renderer.get_nodes()
         target_url = page.get_absolute_url()
         found_in_menu = False
         for node in nodes:
@@ -288,7 +289,8 @@ class ViewPermissionComplexMenuAllNodesTests(ViewPermissionTests):
         request = self.get_request()
         visible_page_ids = get_visible_pages(request, all_pages, self.site)
         self.assertEqual(len(all_pages), len(visible_page_ids))
-        nodes = menu_pool.get_nodes(request)
+        menu_renderer = menu_pool.get_renderer(request)
+        nodes = menu_renderer.get_nodes()
         self.assertEqual(len(nodes), len(all_pages))
 
     def test_public_menu_anonymous_user(self):
@@ -312,7 +314,8 @@ class ViewPermissionComplexMenuAllNodesTests(ViewPermissionTests):
         urls = self.get_url_dict(all_pages)
         user = AnonymousUser()
         request = self.get_request(user, urls['/en/'])
-        nodes = menu_pool.get_nodes(request)
+        menu_renderer = menu_pool.get_renderer(request)
+        nodes = menu_renderer.get_nodes()
         self.assertEqual(len(nodes), 4)
         self.assertInMenu(urls["/en/"], user)
         self.assertInMenu(urls["/en/page_c/"], user)

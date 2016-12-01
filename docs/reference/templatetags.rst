@@ -2,6 +2,8 @@
 Template Tags
 #############
 
+..  module:: cms.templatetags.cms_tags
+
 *****************
 CMS template tags
 *****************
@@ -13,11 +15,13 @@ top of your template::
 
     {% load cms_tags %}
 
-.. template tag:: placeholder
+..  templatetag:: placeholder
 
 placeholder
 ===========
+
 .. versionchanged:: 2.1
+
     The placeholder name became case sensitive.
 
 The ``placeholder`` template tag defines a placeholder on a page. All
@@ -63,7 +67,7 @@ pages have plugins that generate content::
 See also the :setting:`CMS_PLACEHOLDER_CONF` setting where you can also add extra
 context variables and change some other placeholder behaviour.
 
-.. template tag:: static_placeholder
+..  templatetag:: static_placeholder
 
 static_placeholder
 ==================
@@ -72,7 +76,7 @@ static_placeholder
 The static_placeholder template tag can be used anywhere in any template and is not bound to any
 page or model. It needs a name and it will create a placeholder that you can fill with plugins
 afterwards. The static_placeholder tag is normally used to display the same content on multiple
-locations or inside of apphooks or other 3rd party apps. Static_placeholder need to be published to
+locations or inside of apphooks or other third party apps. Static_placeholder need to be published to
 show up on live pages.
 
 Example::
@@ -121,8 +125,6 @@ The :ttag:`render_placeholder` tag takes the following parameters:
 
 * :class:`~cms.models.fields.PlaceholderField` instance
 * ``width`` parameter for context sensitive plugins (optional)
-* ``language`` keyword plus ``language-code`` string to render content in the
-  specified language (optional)
 * ``language`` keyword plus ``language-code`` string to render content in the
   specified language (optional)
 * ``as`` keyword followed by ``varname`` (optional): the template tag output can
@@ -223,7 +225,7 @@ page_lookup
 The ``page_lookup`` argument, passed to several template tags to retrieve a
 page, can be of any of the following types:
 
-* :class:`str <basestring>`: interpreted as the ``reverse_id`` field of the desired page, which
+* :class:`str`: interpreted as the ``reverse_id`` field of the desired page, which
   can be set in the "Advanced" section when editing a page.
 * :class:`int`: interpreted as the primary key (``pk`` field) of the desired page
 * :class:`dict`: a dictionary containing keyword arguments to find the desired page
@@ -281,12 +283,10 @@ Example::
 
 If a matching page isn't found and :setting:`django:DEBUG` is ``True``, an
 exception will be raised. However, if :setting:`django:DEBUG` is ``False``, an
-exception will not be raised. Additionally, if
-:setting:`django:SEND_BROKEN_LINK_EMAILS` is ``True`` and you have specified
-some addresses in :setting:`django:MANAGERS`, an email will be sent to those
-addresses to inform them of the broken link.
+exception will not be raised.
 
 .. versionadded:: 3.0
+
     page_url now supports the ``as`` argument. When used this way, the tag
     emits nothing, but sets a variable in the context with the specified name
     to the resulting value.
@@ -438,12 +438,6 @@ Example::
 render_model
 ============
 
-.. warning::
-
-    ``render_model`` marks as safe the content of the rendered model
-    attribute. This may be a security risk if used on fields which may contains
-    non-trusted content. Be aware, and use the template tag accordingly.
-
 ``render_model`` is the way to add frontend editing to any Django model.
 It both renders the content of the given attribute of the model instance and
 makes it clickable to edit the related model.
@@ -468,7 +462,7 @@ This will render to:
 .. code-block:: html+django
 
     <!-- The content of the H1 is the active area that triggers the frontend editor -->
-    <h1><div class="cms-plugin cms-plugin-myapp-mymodel-title-1">{{ my_model.title }}</div></h1>
+    <h1><cms-plugin class="cms-plugin cms-plugin-myapp-mymodel-title-1">{{ my_model.title }}</cms-plugin></h1>
 
 **Arguments:**
 
@@ -494,6 +488,20 @@ This will render to:
 * ``varname`` (optional): the template tag output can be saved as a context
   variable for later use.
 
+.. note::
+
+    By default this template tag escapes the content of the rendered
+    model attribute. This helps prevent a range of security vulnerabilities
+    stemming from HTML, Javascript, and CSS Code Injection.
+
+    To change this behavior, the project administrator should carefully review
+    each use of this template tag and ensure that all content which is rendered
+    to a page using this template tag is cleansed of any potentially harmful
+    HTML markup, CSS styles or JavaScript.
+
+    Once the administrator is satisfied that the content is
+    clean, he or she can add the "safe" filter parameter to the template tag
+    if the content should be rendered without escaping.
 
 .. warning::
 
@@ -527,13 +535,13 @@ This will render to:
 .. code-block:: html+django
 
     <!-- This whole block is the active area that triggers the frontend editor -->
-    <div class="cms-plugin cms-plugin-myapp-mymodel-1">
+    <template class="cms-plugin cms-plugin-start cms-plugin-myapp-mymodel-1"></template>
         <h1>{{ my_model.title }}</h1>
         <div class="body">
             {{ my_model.date|date:"d F Y" }}
             {{ my_model.text }}
         </div>
-    </div>
+    <template class="cms-plugin cms-plugin-end cms-plugin-myapp-mymodel-1"></template>
 
 In the block the ``my_model`` is aliased as ``instance`` and every attribute and
 method is available; also template tags and filters are available in the block.
@@ -562,9 +570,25 @@ method is available; also template tags and filters are available in the block.
 * ``varname`` (optional): the template tag output can be saved as a context
   variable for later use.
 
+.. note::
+
+    By default this template tag escapes the content of the rendered
+    model attribute. This helps prevent a range of security vulnerabilities
+    stemming from HTML, Javascript, and CSS Code Injection.
+
+    To change this behavior, the project administrator should carefully review
+    each use of this template tag and ensure that all content which is rendered
+    to a page using this template tag is cleansed of any potentially harmful
+    HTML markup, CSS styles or JavaScript.
+
+    Once the administrator is satisfied that the content is
+    clean, he or she can add the "safe" filter parameter to the template tag
+    if the content should be rendered without escaping.
+
 
 .. templatetag:: render_model_icon
 .. versionadded:: 3.0
+
 
 render_model_icon
 =================
@@ -586,10 +610,10 @@ It will render to something like:
 
     <h3>
         <a href="{{ my_model.get_absolute_url }}">{{ my_model.title }}</a>
-        <div class="cms-plugin cms-plugin-myapp-mymodel-1 cms-render-model-icon">
+        <template class="cms-plugin cms-plugin-start cms-plugin-myapp-mymodel-1 cms-render-model-icon"></template>
             <!-- The image below is the active area that triggers the frontend editor -->
             <img src="/static/cms/img/toolbar/render_model_placeholder.png">
-        </div>
+        <template class="cms-plugin cms-plugin-end cms-plugin-myapp-mymodel-1 cms-render-model-icon"></template>
     </h3>
 
 .. note::
@@ -613,9 +637,25 @@ It will render to something like:
 * ``varname`` (optional): the template tag output can be saved as a context
   variable for later use.
 
+.. note::
+
+    By default this template tag escapes the content of the rendered
+    model attribute. This helps prevent a range of security vulnerabilities
+    stemming from HTML, Javascript, and CSS Code Injection.
+
+    To change this behavior, the project administrator should carefully review
+    each use of this template tag and ensure that all content which is rendered
+    to a page using this template tag is cleansed of any potentially harmful
+    HTML markup, CSS styles or JavaScript.
+
+    Once the administrator is satisfied that the content is
+    clean, he or she can add the "safe" filter parameter to the template tag
+    if the content should be rendered without escaping.
+
 
 .. templatetag:: render_model_add
 .. versionadded:: 3.0
+
 
 render_model_add
 ================
@@ -635,10 +675,10 @@ It will render to something like:
 
     <h3>
         <a href="{{ my_model.get_absolute_url }}">{{ my_model.title }}</a>
-        <div class="cms-plugin cms-plugin-myapp-mymodel-1 cms-render-model-add">
+        <template class="cms-plugin cms-plugin-start cms-plugin-myapp-mymodel-1 cms-render-model-add"></template>
             <!-- The image below is the active area that triggers the frontend editor -->
             <img src="/static/cms/img/toolbar/render_model_placeholder.png">
-        </div>
+        <template class="cms-plugin cms-plugin-end cms-plugin-myapp-mymodel-1 cms-render-model-add"></template>
     </h3>
 
 .. note::
@@ -660,7 +700,22 @@ It will render to something like:
 * ``varname`` (optional): the template tag output can be saved as a context
   variable for later use.
 
-..warning::
+.. note::
+
+    By default this template tag escapes the content of the rendered
+    model attribute. This helps prevent a range of security vulnerabilities
+    stemming from HTML, Javascript, and CSS Code Injection.
+
+    To change this behavior, the project administrator should carefully review
+    each use of this template tag and ensure that all content which is rendered
+    to a page using this template tag is cleansed of any potentially harmful
+    HTML markup, CSS styles or JavaScript.
+
+    Once the administrator is satisfied that the content is
+    clean, he or she can add the "safe" filter parameter to the template tag
+    if the content should be rendered without escaping.
+
+.. warning::
 
     If passing a class, instead of an instance, and using ``view_method``,
     please bear in mind that the method will be called over an **empty instance**
@@ -693,9 +748,9 @@ It will render to something like:
 
 .. code-block:: html+django
 
-    <div class="cms-plugin cms-plugin-myapp-mymodel-1 cms-render-model-add">
-      <div>New Object</div>
-    </div>
+    <template class="cms-plugin cms-plugin-start cms-plugin-myapp-mymodel-1 cms-render-model-add"></template>
+        <div>New Object</div>
+    <template class="cms-plugin cms-plugin-end cms-plugin-myapp-mymodel-1 cms-render-model-add"></template>
 
 
 .. warning::

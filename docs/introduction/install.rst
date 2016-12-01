@@ -8,7 +8,7 @@ We'll get started by setting up our environment.
 Requirements
 ************
 
-django CMS requires Django version 1.6.9 or later, 1.7 or 1.8, and Python 2.6, 2.7, 3.3 or 3.4.
+django CMS requires Django 1.8, and Python 2.7, 3.3 or 3.4.
 
 ************************
 Your working environment
@@ -54,7 +54,7 @@ Run it to create a new Django project called ``mysite``::
 This means:
 
 * run the django CMS installer
-* install Django Filer too (``-f``)
+* install Django Filer too (``-f``) - **required for this tutorial**
 * use the current directory as the parent of the new project directory (``-p .``)
 * call the new project directory ``mysite``
 
@@ -63,7 +63,7 @@ This means:
    Django Filer, a useful application for managing files and processing images. Although it's not
    required for django CMS itself, a vast number of django CMS addons use it, and nearly all django
    CMS projects have it installed. If you know you won't need it, omit the flag. See the `django
-   CMS installer documentation for more information <http://djangocms-installer.readthedocs.org>`_.
+   CMS installer documentation for more information <https://djangocms-installer.readthedocs.io>`_.
 
 
 .. warning::
@@ -81,19 +81,10 @@ For the purposes of this tutorial, it's recommended that you answer the
 installer's questions as follows (where we suggest something different from the default, it's
 indicated with an asterisk *****).
 
-.. warning:: Django security support
-
-    Django 1.6 support is provided as an interim measure only. In accordance with the `Django
-    Project's security policies <https://docs.djangoproject.com/en/dev/internals/security/>`_, 1.6
-    no longer receives security updates from the Django Project team. Projects running on Django
-    1.6 have known vulnerabilities, so don't choose to install this version unless you have a
-    particular need to.
-
 * Database configuration (in URL format): ``sqlite://localhost/project.db``
 * django CMS version: ``stable``
 * Django version: ``stable``
 * Activate Django I18N / L10N setting: ``yes``
-* Install and configure reversion support: ``yes``
 * Languages to enable. Option can be provided multiple times, or as a comma separated list: ``en,
   de`` *****
 * Optional default time zone: ``America/Chicago``

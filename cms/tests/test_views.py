@@ -1,5 +1,3 @@
-from __future__ import with_statement
-from copy import deepcopy
 import re
 import sys
 
@@ -14,9 +12,8 @@ from django.test.utils import override_settings
 from cms.api import create_page, create_title, publish_page
 from cms.models import PagePermission, UserSettings, Placeholder
 from cms.page_rendering import _handle_no_page
-from cms.test_utils.testcases import CMSTestCase, ClearURLs
+from cms.test_utils.testcases import CMSTestCase
 from cms.test_utils.util.fuzzy_int import FuzzyInt
-from cms.utils.compat import DJANGO_1_7
 from cms.utils.conf import get_cms_setting
 from cms.views import details
 from menus.menu_pool import menu_pool
@@ -127,6 +124,20 @@ class ViewTests(CMSTestCase):
         with self.login_user_context(superuser):
             response = self.client.get('/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
             self.assertEqual(response.status_code, 200)
+            self.assertContains(response, 'This page has no preview')
+
+            self.client.get('/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+            response = self.client.get('/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF'))
+            self.assertEqual(response.status_code, 302)
+
+            self.client.get('/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+            response = self.client.get('/en/?%s' % get_cms_setting('TOOLBAR_URL__BUILD'))
+            self.assertEqual(response.status_code, 200)
+            self.assertContains(response, 'This page has no preview')
+
+            self.client.get('/en/?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
+            response = self.client.get('/en/?%s' % get_cms_setting('TOOLBAR_URL__DISABLE'))
+            self.assertEqual(response.status_code, 302)
 
     def test_login_required(self):
         create_page("page", "nav_playground.html", "en", published=True,
@@ -170,7 +181,6 @@ class ViewTests(CMSTestCase):
             response = self.client.get("/en/?%s" % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'))
         self.assertContains(response, "cms-toolbar-item-switch-save-edit", 1, 200)
 
-
     def test_toolbar_switch_urls(self):
         user = self.get_superuser()
         user_settings = UserSettings(language="en", user=user)
@@ -189,9 +199,22 @@ class ViewTests(CMSTestCase):
             response = self.client.get("/fr/?%s" % get_cms_setting('CMS_TOOLBAR_URL__EDIT_OFF'))
             self.assertContains(response, "/fr/?%s" % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON'), 1, 200)
 
+    def test_incorrect_slug_for_language(self):
+        """
+        Test details view when page slug and current language don't match.
+        In this case we refer to the user's current language and the page slug we have for that language.
+        """
+        create_page("home", "nav_playground.html", "en", published=True)
+        cms_page = create_page("stevejobs", "nav_playground.html", "en", published=True)
+        create_title("de", "jobs", cms_page)
+        cms_page.publish('de')
+        response = self.client.get('/de/stevejobs/')
+        self.assertEqual(response.status_code, 302)
+        self.assertRedirects(response, '/de/jobs/')
+
 
 @override_settings(ROOT_URLCONF='cms.test_utils.project.urls')
-class ContextTests(ClearURLs, CMSTestCase):
+class ContextTests(CMSTestCase):
 
     def test_context_current_page(self):
         """
@@ -201,14 +224,7 @@ class ContextTests(ClearURLs, CMSTestCase):
         from django.template import context
 
         page_template = "nav_playground.html"
-        if DJANGO_1_7:
-            original_context = {'TEMPLATE_CONTEXT_PROCESSORS': settings.TEMPLATE_CONTEXT_PROCESSORS}
-            override = {'TEMPLATE_CONTEXT_PROCESSORS': list(settings.TEMPLATE_CONTEXT_PROCESSORS)}
-            override['TEMPLATE_CONTEXT_PROCESSORS'].remove("cms.context_processors.cms_settings")
-        else:
-            original_context = {'TEMPLATES': settings.TEMPLATES}
-            override = {'TEMPLATES': deepcopy(settings.TEMPLATES)}
-            override['TEMPLATES'][0]['OPTIONS']['context_processors'].remove("cms.context_processors.cms_settings")
+        original_context = {'TEMPLATES': settings.TEMPLATES}
         page = create_page("page", page_template, "en", published=True)
         page_2 = create_page("page-2", page_template, "en", published=True,
                              parent=page)
@@ -223,19 +239,10 @@ class ContextTests(ClearURLs, CMSTestCase):
         cache.clear()
         menu_pool.clear()
         context._standard_context_processors = None
-        # Number of queries when context processors is not enabled
-        with self.settings(**override):
-            with self.assertNumQueries(FuzzyInt(0, 12)) as context:
-                response = self.client.get("/en/plain_view/")
-                num_queries = len(context.captured_queries)
-                self.assertFalse('CMS_TEMPLATE' in response.context)
-        cache.clear()
-        menu_pool.clear()
+
         # Number of queries when context processor is enabled
         with self.settings(**original_context):
-            # no extra query is run when accessing urls managed by standard
-            # django applications
-            with self.assertNumQueries(FuzzyInt(0, num_queries)):
+            with self.assertNumQueries(FuzzyInt(0, 17)):
                 response = self.client.get("/en/plain_view/")
             # One query when determining current page
             with self.assertNumQueries(FuzzyInt(0, 1)):
@@ -249,23 +256,13 @@ class ContextTests(ClearURLs, CMSTestCase):
         cache.clear()
         menu_pool.clear()
 
-        # Number of queries when context processors is not enabled
-        with self.settings(**override):
-            # Baseline number of queries
-            with self.assertNumQueries(FuzzyInt(13, 20)) as context:
-                response = self.client.get("/en/page-2/")
-                num_queries_page = len(context.captured_queries)
-        cache.clear()
-        menu_pool.clear()
-
         # Number of queries when context processors is enabled
         with self.settings(**original_context):
-            # Exactly the same number of queries are executed with and without
-            # the context_processor
-            with self.assertNumQueries(num_queries_page):
+            with self.assertNumQueries(FuzzyInt(13, 26)) as context:
                 response = self.client.get("/en/page-2/")
                 template = Variable('CMS_TEMPLATE').resolve(response.context)
                 self.assertEqual(template, page_template)
+                num_queries_page = len(context.captured_queries)
         cache.clear()
         menu_pool.clear()
         page_2.template = 'INHERIT'

@@ -20,13 +20,6 @@ hint on hover. Double-clicking opens a pop-up window containing the change form 
 
 .. warning::
 
-    Template tags used by this feature mark as safe the content of the rendered
-    model attribute. This may be a security risk if used on fields which may
-    hold non-trusted content. Be aware, and use the template tags accordingly.
-
-
-.. warning::
-
     This feature is only partially compatible with django-hvad: using
     ``render_model`` with hvad-translated fields (say
     ``{% render_model object 'translated_field' %}`` returns an error if the
@@ -39,13 +32,14 @@ hint on hover. Double-clicking opens a pop-up window containing the change form 
 Template tags
 *************
 
-This feature relies on four template tags sharing common code. All require that you ``{% load
+This feature relies on five template tags sharing common code. All require that you ``{% load
 cms_tags %}`` in your template:
 
 * :ttag:`render_model` (for editing a specific field)
 * :ttag:`render_model_block` (for editing any of the fields in a defined block)
 * :ttag:`render_model_icon` (for editing a field represented by another value, such as an image)
 * :ttag:`render_model_add` (for adding an instance of the specified model)
+* :ttag:`render_model_add_block` (for adding an instance of the specified model)
 
 Look at the tag-specific page for more detailed reference and discussion of limitations and caveats.
 
@@ -101,13 +95,13 @@ Will render to:
 
 .. code-block:: html+django
 
-    <div class="cms-plugin cms-plugin-cms-page-changelist-1">
+    <template class="cms-plugin cms-plugin-start cms-plugin-cms-page-changelist-1"></tempate>
         <h3>Menu</h3>
         <ul>
             <li><a href="/">Home</a></li>
             <li><a href="/another">another</a></li>
             [...]
-    </div>
+    <template class="cms-plugin cms-plugin-end cms-plugin-cms-page-changelist-1"></tempate>
 
 .. warning:
 
@@ -151,7 +145,7 @@ template tag::
     <h1>{% render_model instance "some_attribute" %}</h1>
     {% endblock content %}
 
-See :ttag:`templatetag reference <render_model>` for arguments documentation.
+See :ttag:`template tag reference <render_model>` for arguments documentation.
 
 
 Selected fields edit
@@ -212,7 +206,7 @@ evaluated with ``request`` as parameter.
 The custom view does not need to obey any specific interface; it will get
 ``edit_fields`` value as a ``GET`` parameter.
 
-See :ttag:`templatetag reference <render_model>` for arguments documentation.
+See :ttag:`template tag reference <render_model>` for arguments documentation.
 
 Example ``view_url``::
 

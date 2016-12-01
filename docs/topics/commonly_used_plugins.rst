@@ -3,18 +3,18 @@ Some commonly-used plugins
 ##########################
 
 .. warning::
-    In version 3 of the CMS we removed all the plugins from the
+    In version 3 of the CMS we removed all the plugins from the main repository
     into separate repositories to continue their development there.
     you are upgrading from a previous version. Please refer to
     :ref:`Upgrading from previous versions <upgrade-to-3.0>`
 
 These are the recommended plugins to use with django CMS.
 
-.. :module:: djangocms_file
+..  module:: djangocms_file
 
-.. :class:: djangocms_file.cms_plugins.FilePlugin
+..  class:: djangocms_file.cms_plugins.FilePlugin
 
-.. important::
+..  important::
     See the note on :ref:`installed_apps` about ordering.
 
 ****
@@ -52,32 +52,6 @@ You might consider using `django-filer`_ with `django filer CMS plugin`_ and its
 .. _django-filer: https://github.com/stefanfoulis/django-filer
 .. _django filer CMS plugin: https://github.com/stefanfoulis/cmsplugin-filer
 
-.. :module:: djangocms_flash
-
-.. :class:: djangocms_flash.cms_plugins.FlashPlugin
-
-*****
-Flash
-*****
-
-Available on `GitHub (divio/djangocms-flash) <http://github.com/divio/djangocms-flash>`_
-and on `PyPi (djangocms-flash) <https://pypi.python.org/pypi/djangocms-flash>`_.
-
-Allows you to upload and display a Flash SWF file on your page.
-
-Please install it using ``pip`` or similar and be sure you have the following in the
-:setting:`django:INSTALLED_APPS` setting in your project's ``settings.py`` file::
-
-    INSTALLED_APPS = (
-        # ...
-        'djangocms_flash',
-        # ...
-    )
-
-.. :module:: djangocms_googlemap
-
-.. :class:: djangocms_googlemap.cms_plugins.GoogleMapPlugin
-
 *********
 GoogleMap
 *********
@@ -111,9 +85,9 @@ setting in your project's ``settings.py`` file::
     )
 
 
-.. :module:: djangocms_picture
+..  module:: djangocms_picture
 
-.. :class:: djangocms_picture.cms_plugins.PicturePlugin
+..  class:: djangocms_picture.cms_plugins.PicturePlugin
 
 *******
 Picture
@@ -137,7 +111,7 @@ There are several solutions for Python and Django out there to automatically
 re-size your pictures, you can find some on `Django Packages`_ and compare them
 there.
 
-In your project template directory create a folder called ``djangocms_picture/plugins`` and
+In your project template directory create a folder called ``cms/plugins`` and
 in it create a file called ``picture.html``. Here is an example
 ``picture.html`` template using `easy-thumbnails`_:
 
@@ -179,6 +153,8 @@ running.
 Teaser
 ******
 
+..  module:: djangocms_teaser
+
 Available on `GitHub (divio/djangocms-teaser) <http://github.com/divio/djangocms-teaser>`_
 and on `PyPi (djangocms-teaser) <https://pypi.python.org/pypi/djangocms-teaser>`_.
 
@@ -215,9 +191,9 @@ Consider using `djangocms-text-ckeditor
 <https://github.com/divio/djangocms-text-ckeditor>`_ for displaying text. You
 may of course use your preferred editor; others are available.
 
-.. :module:: djangocms_video
+..  module:: djangocms_video
 
-.. :class:: djangocms_video.cms_plugins.VideoPlugin
+..  class:: djangocms_video.cms_plugins.VideoPlugin
 
 *****
 Video
@@ -269,11 +245,11 @@ running.
 .. _django-filer: https://github.com/stefanfoulis/django-filer
 .. _django filer CMS plugin: https://github.com/stefanfoulis/cmsplugin-filer
 
-.. :module:: djangocms_twitter
+..  module:: djangocms_twitter
 
-.. :class:: djangocms_twitter.cms_plugins.TwitterRecentEntriesPlugin
+..  class:: djangocms_twitter.cms_plugins.TwitterRecentEntriesPlugin
 
-.. :class:: djangocms_twitter.cms_plugins.TwitterSearchPlugin
+..  class:: djangocms_twitter.cms_plugins.TwitterSearchPlugin
 
 *******
 Twitter
@@ -286,9 +262,9 @@ We recommend one of the following plugins:
 
 .. warning:: These plugins are not currently compatible with Django 1.7.
 
-.. :module:: djangocms_inherit
+..  module:: djangocms_inherit
 
-.. :class:: djangocms_inherit.cms_plugins.InheritPagePlaceholderPlugin
+..  class:: djangocms_inherit.cms_plugins.InheritPagePlaceholderPlugin
 
 *******
 Inherit

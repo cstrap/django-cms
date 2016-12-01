@@ -46,7 +46,7 @@ Create a ``cms_menus.py`` in your application, with the following::
 If you refresh a page you should now see the menu entries above.
 The ``get_nodes`` function should return a list of
 :class:`NavigationNode <menus.base.NavigationNode>` instances. A
-:class:`NavigationNode` takes the following arguments:
+:class:`menus.base.NavigationNode` takes the following arguments:
 
 ``title``
   Text for the menu node
@@ -72,7 +72,7 @@ The ``get_nodes`` function should return a list of
 ``visible=True``
   Whether or not this menu item should be visible
 
-Additionally, each :class:`NavigationNode` provides a number of methods which are
+Additionally, each :class:`menus.base.NavigationNode` provides a number of methods which are
 detailed in the :class:`NavigationNode <menus.base.NavigationNode>` API references.
 
 
@@ -97,8 +97,8 @@ Complete example::
                     NavigationNode(_("Log out"), reverse(logout), 2, attr={'visible_for_anonymous': False}),
                 ]
 
-.. _integration_attach_menus:
 
+.. _integration_attach_menus:
 
 ************
 Attach Menus
@@ -109,9 +109,9 @@ root. But if you want the menu to be attached to a CMS Page you can do that as
 well.
 
 Instead of extending from :class:`~menus.base.Menu` you need to extend from
-:class:`cms.menu_bases.CMSAttachMenu` and you need to define a name. We will do
-that with the example from above::
+:class:`cms.menu_bases.CMSAttachMenu` and you need to define a name.
 
+We will do that with the example from above::
 
     from menus.base import NavigationNode
     from menus.menu_pool import menu_pool
@@ -136,9 +136,9 @@ that with the example from above::
 
     menu_pool.register_menu(TestMenu)
 
-
 Now you can link this Menu to a page in the *Advanced* tab of the page
 settings under attached menu.
+
 
 .. _integration_modifiers:
 
@@ -152,22 +152,26 @@ A modifier can change the properties of existing nodes or rearrange entire
 menus.
 
 
-An example use-case
-===================
+Example use-cases
+=================
 
 A simple example: you have a news application that publishes pages
 independently of django CMS. However, you would like to integrate the
 application into the menu structure of your site, so that at appropriate
 places a *News* node appears in the navigation menu.
 
-In such a case, a Navigation Modifier is the solution.
+In another example, you might want a particular attribute of your ``Pages`` to be available in
+menu templates. In order to keep menu nodes lightweight (which can be important in a site with
+thousands of pages) they only contain the minimum attributes required to generate a usable menu.
 
+In both cases, a Navigation Modifier is the solution - in the first case, to add a new node at the
+appropriate place, and in the second, to add a new attribute - on the ``attr`` attribute, rather
+than directly on the ``NavigationNode``, to help avoid conflicts - to all nodes in the menu.
 
 How it works
 ============
 
-Normally, you'd want to place modifiers in your application's
-``cms_menus.py``.
+Place your modifiers in your application's ``cms_menus.py``.
 
 To make your modifier available, it then needs to be registered with
 ``menus.menu_pool.menu_pool``.
@@ -175,25 +179,32 @@ To make your modifier available, it then needs to be registered with
 Now, when a page is loaded and the menu generated, your modifier will
 be able to inspect and modify its nodes.
 
-A simple modifier looks something like this::
+Here is an example of a simple modifier that places a Page's attribute in the corresponding
+``NavigationNode``::
 
     from menus.base import Modifier
     from menus.menu_pool import menu_pool
+
+    from cms.models import Page
 
     class MyMode(Modifier):
         """
 
         """
         def modify(self, request, nodes, namespace, root_id, post_cut, breadcrumb):
+            # if the menu is not yet cut, don't do anything
             if post_cut:
                 return nodes
-            count = 0
+            # otherwise loop over the nodes
             for node in nodes:
-                node.counter = count
-                count += 1
+                # does this node represent a Page?
+                if node.attr["is_page"]:
+                    # if so, put its changed_by attribute on the node
+                    node.attr["changed_by"] = Page.objects.get(id=node.id).changed_by
             return nodes
 
     menu_pool.register_modifier(MyMode)
+
 
 It has a method :meth:`~menus.base.Modifier.modify` that should return a list
 of :class:`~menus.base.NavigationNode` instances.
@@ -253,3 +264,4 @@ Here is an example of a built-in modifier that marks all node levels::
                 self.mark_levels(child, post_cut)
 
     menu_pool.register_modifier(Level)
+

@@ -1,3 +1,5 @@
+.. _toolbar_how_to:
+
 #####################
 Extending the Toolbar
 #####################
@@ -31,7 +33,7 @@ automatically loaded as long :setting:`CMS_TOOLBARS` is not set (or is set to
 ``None``).
 
 If you use the automated way, your ``cms_toolbars.py`` file should contain
-classes that extend ``cms.toolbar_base.CMSToolbar`` and are registered using :meth:`cms.toolbar_pool.toolbar_pool.register`.
+classes that extend ``cms.toolbar_base.CMSToolbar`` and are registered using :meth:`~cms.toolbar_pool.ToolbarPool.register()`.
 The register function can be used as a decorator.
 
 These classes have four attributes:
@@ -152,7 +154,7 @@ menus::
 
 
 If you wish to simply detect the presence of a menu without actually creating
-it, you can use :meth:`cms.toolbar.toolbar.CMSToolbar.get_menu`, which will
+it, you can use :meth:`~cms.toolbar.toolbar.CMSToolbar.get_menu()`, which will
 return the menu if it is present, or, if not, will return ``None``.
 
 
@@ -345,9 +347,12 @@ Frontend
 ********
 
 The toolbar adds a class ``cms-ready`` to the **html** tag when ready. Additionally we add
-``cms-toolbar-expanded`` when the toolbar is visible (expanded).
+``cms-toolbar-expanded`` when the toolbar is fully expanded. We also add
+``cms-toolbar-expanding`` and ``cms-toolbar-collapsing`` classes while toolbar
+is animating.
 
 The toolbar also fires a JavaScript event called **cms-ready** on the document.
 You can listen to this event using jQuery::
 
     CMS.$(document).on('cms-ready', function () { ... });
+

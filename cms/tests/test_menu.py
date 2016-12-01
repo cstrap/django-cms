@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
-from __future__ import with_statement
 import copy
+from cms.test_utils.project.sampleapp.cms_apps import NamespacedApp, SampleApp, SampleApp2
 
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser, Permission, Group
@@ -8,21 +8,20 @@ from django.template import Template, TemplateSyntaxError
 from django.test.utils import override_settings
 from django.utils.translation import activate
 from cms.apphook_pool import apphook_pool
-from menus.base import NavigationNode, Menu
+from menus.base import NavigationNode
 from menus.menu_pool import menu_pool, _build_nodes_inner_for_one_menu
 from menus.models import CacheKey
 from menus.utils import mark_descendants, find_selected, cut_levels
 
 from cms.api import create_page
-from cms.cms_menus import CMSMenu, get_visible_pages
+from cms.cms_menus import get_visible_pages
 from cms.models import Page, ACCESS_PAGE_AND_DESCENDANTS
 from cms.models.permissionmodels import GlobalPagePermission, PagePermission
-from cms.test_utils.project.sampleapp.cms_menus import StaticMenu, StaticMenu2
+from cms.test_utils.project.sampleapp.cms_menus import SampleAppMenu, StaticMenu, StaticMenu2
 from cms.test_utils.fixtures.menus import (MenusFixture, SubMenusFixture,
                                            SoftrootFixture, ExtendedMenusFixture)
 from cms.test_utils.testcases import CMSTestCase
-from cms.test_utils.util.context_managers import LanguageOverride
-from cms.test_utils.util.fuzzy_int import FuzzyInt
+from cms.test_utils.util.context_managers import apphooks, LanguageOverride
 from cms.test_utils.util.mock import AttributeObject
 from cms.utils import get_cms_setting
 from cms.utils.i18n import force_language
@@ -39,7 +38,8 @@ class BaseMenuTest(CMSTestCase):
         nodes = [node1, node2, node3, node4, node5]
         tree = _build_nodes_inner_for_one_menu([n for n in nodes], "test")
         request = self.get_request(path)
-        menu_pool.apply_modifiers(tree, request)
+        renderer = menu_pool.get_renderer(request)
+        renderer.apply_modifiers(tree, request)
         return tree, nodes
 
     def setUp(self):
@@ -67,76 +67,126 @@ class MenuDiscoveryTest(ExtendedMenusFixture, CMSTestCase):
         self.old_menu = menu_pool.menus
         menu_pool.menus = {}
         menu_pool.discover_menus()
+        menu_pool.register_menu(SampleAppMenu)
         menu_pool.register_menu(StaticMenu)
         menu_pool.register_menu(StaticMenu2)
 
     def tearDown(self):
         menu_pool.menus = self.old_menu
-        menu_pool._expanded = False
         super(MenuDiscoveryTest, self).tearDown()
 
-    def test_menu_types_expansion_basic(self):
-        request = self.get_request('/')
-
+    def test_menu_registered(self):
+        menu_pool.discovered = False
         menu_pool.discover_menus()
-        self.assertFalse(menu_pool._expanded)
-        for key, menu in menu_pool.menus.items():
-            self.assertTrue(issubclass(menu, Menu))
-        defined_menus = len(menu_pool.menus)
 
-        # Testing expansion after get_nodes
-        menu_pool.get_nodes(request)
-        self.assertTrue(menu_pool._expanded)
-        for key, menu in menu_pool.menus.items():
-            self.assertTrue(isinstance(menu, Menu))
-        self.assertEqual(defined_menus, len(menu_pool.menus))
+        # The following tests that get_registered_menus()
+        # returns all menus registered based on the for_rendering flag
+
+        # A list of menu classes registered regardless of whether they
+        # have instances attached or not
+        registered = menu_pool.get_registered_menus(for_rendering=False)
+
+        # A list of menu classes registered and filter out any attached menu
+        # if it does not have instances.
+        registered_for_rendering = menu_pool.get_registered_menus(for_rendering=True)
+
+        # We've registered three menus
+        self.assertEqual(len(registered), 3)
+
+        # But two of those are attached menus and shouldn't be rendered.
+        self.assertEqual(len(registered_for_rendering), 1)
+
+        # Attached both menus to separate pages
+        create_page("apphooked-page", "nav_playground.html", "en",
+                    published=True,
+                    navigation_extenders='StaticMenu')
+
+        create_page("apphooked-page", "nav_playground.html", "en",
+                    published=True,
+                    navigation_extenders='StaticMenu2')
+
+        registered = menu_pool.get_registered_menus(for_rendering=False)
+        registered_for_rendering = menu_pool.get_registered_menus(for_rendering=True)
+
+        # The count should be 3 but grows to 5 because of the two published instances.
+        # Even though we've registered three menus, the total is give because two
+        # are attached menus and each attached menu has two instances.
+        self.assertEqual(len(registered), 5)
+        self.assertEqual(len(registered_for_rendering), 5)
+
+    def test_menu_registered_in_renderer(self):
+        menu_pool.discovered = False
+        menu_pool.discover_menus()
+
+        # The following tests that a menu renderer calculates the registered
+        # menus on a request basis.
+
+        request_1 = self.get_request('/en/')
+        request_1_renderer = menu_pool.get_renderer(request_1)
+
+        registered = menu_pool.get_registered_menus(for_rendering=False)
+
+        self.assertEqual(len(registered), 3)
+        self.assertEqual(len(request_1_renderer.menus), 1)
+
+        create_page("apphooked-page", "nav_playground.html", "en",
+                    published=True,
+                    navigation_extenders='StaticMenu')
+
+        create_page("apphooked-page", "nav_playground.html", "en",
+                    published=True,
+                    navigation_extenders='StaticMenu2')
+
+        request_2 = self.get_request('/en/')
+        request_2_renderer = menu_pool.get_renderer(request_2)
+
+        # The count should be 3 but grows to 5 because of the two published instances.
+        self.assertEqual(len(request_2_renderer.menus), 5)
 
     def test_menu_expanded(self):
         menu_pool.discovered = False
         menu_pool.discover_menus()
 
         with self.settings(ROOT_URLCONF='cms.test_utils.project.urls_for_apphook_tests'):
-            page = create_page("apphooked-page", "nav_playground.html", "en",
-                               published=True, apphook="SampleApp",
-                               navigation_extenders='StaticMenu')
+            with apphooks(SampleApp):
+                page = create_page("apphooked-page", "nav_playground.html", "en",
+                                   published=True, apphook="SampleApp",
+                                   navigation_extenders='StaticMenu')
 
-            menu_pool._expanded = False
-            self.assertFalse(menu_pool._expanded)
-            self.assertTrue(menu_pool.discovered)
-            menu_pool._expand_menus()
+                self.assertTrue(menu_pool.discovered)
 
-            self.assertTrue(menu_pool._expanded)
-            self.assertTrue(menu_pool.discovered)
-            # Counts the number of StaticMenu (which is expanded) and StaticMenu2
-            # (which is not) and checks the keyname for the StaticMenu instances
-            static_menus = 2
-            static_menus_2 = 1
-            for key, menu in menu_pool.menus.items():
-                if key.startswith('StaticMenu:'):
-                    static_menus -= 1
-                    self.assertTrue(key.endswith(str(page.get_public_object().pk)) or key.endswith(str(page.get_draft_object().pk)))
+                menus = menu_pool.get_registered_menus()
 
-                if key == 'StaticMenu2':
-                    static_menus_2 -= 1
+                self.assertTrue(menu_pool.discovered)
+                # Counts the number of StaticMenu (which is expanded) and StaticMenu2
+                # (which is not) and checks the key name for the StaticMenu instances
+                static_menus = 2
+                static_menus_2 = 1
+                for key, menu in menus.items():
+                    if key.startswith('StaticMenu:'):
+                        static_menus -= 1
+                        self.assertTrue(key.endswith(str(page.get_public_object().pk)) or key.endswith(str(page.get_draft_object().pk)))
 
-            self.assertEqual(static_menus, 0)
-            self.assertEqual(static_menus_2, 0)
+                    if key == 'StaticMenu2':
+                        static_menus_2 -= 1
+
+                self.assertEqual(static_menus, 0)
+                self.assertEqual(static_menus_2, 0)
 
     def test_multiple_menus(self):
-        apphook_pool.discover_apps()
         with self.settings(ROOT_URLCONF='cms.test_utils.project.urls_for_apphook_tests'):
-            create_page("apphooked-page", "nav_playground.html", "en",
-                        published=True, apphook="SampleApp2")
-            create_page("apphooked-page", "nav_playground.html", "en",
-                        published=True,
-                        navigation_extenders='StaticMenu')
-            create_page("apphooked-page", "nav_playground.html", "en",
-                        published=True, apphook="NamespacedApp", apphook_namespace='whatever',
-                        navigation_extenders='StaticMenu')
-            menu_pool._expanded = False
-            menu_pool._expand_menus()
-
-            self.assertEqual(len(menu_pool.get_menus_by_attribute("cms_enabled", True)), 2)
+            with apphooks(NamespacedApp, SampleApp2):
+                apphook_pool.discovered = False
+                apphook_pool.discover_apps()
+                create_page("apphooked-page", "nav_playground.html", "en",
+                            published=True, apphook="SampleApp2")
+                create_page("apphooked-page", "nav_playground.html", "en",
+                            published=True,
+                            navigation_extenders='StaticMenu')
+                create_page("apphooked-page", "nav_playground.html", "en",
+                            published=True, apphook="NamespacedApp", apphook_namespace='whatever',
+                            navigation_extenders='StaticMenu')
+                self.assertEqual(len(menu_pool.get_menus_by_attribute("cms_enabled", True)), 2)
 
 
 class ExtendedFixturesMenuTests(ExtendedMenusFixture, BaseMenuTest):
@@ -230,14 +280,17 @@ class FixturesMenuTests(MenusFixture, BaseMenuTest):
             self.assertRaises(TemplateSyntaxError, tpl.render, context)
 
     def test_basic_cms_menu(self):
-        self.assertEqual(len(menu_pool.menus), 1)
+        menus = menu_pool.get_registered_menus()
+        self.assertEqual(len(menus), 1)
         with force_language("en"):
             response = self.client.get(self.get_pages_root())  # path = '/'
         self.assertEqual(response.status_code, 200)
         request = self.get_request()
 
+        renderer = menu_pool.get_renderer(request)
+
         # test the cms menu class
-        menu = CMSMenu()
+        menu = renderer.get_menu('CMSMenu')
         nodes = menu.get_nodes(request)
         self.assertEqual(len(nodes), len(self.get_all_pages()))
 
@@ -261,16 +314,17 @@ class FixturesMenuTests(MenusFixture, BaseMenuTest):
     def test_show_menu_num_queries(self):
         context = self.get_context()
         # test standard show_menu
-        with self.assertNumQueries(FuzzyInt(5, 7)):
+        with self.assertNumQueries(8):
             """
             The queries should be:
-                get all pages
+                get all public pages
+                get all draft pages from public pages
                 get all page permissions
                 get all titles
                 get the menu cache key
-                create a savepoint (in django>=1.6)
+                create a savepoint
                 set the menu cache key
-                release the savepoint (in django>=1.6)
+                release the savepoint
             """
             tpl = Template("{% load menu_tags %}{% show_menu %}")
             tpl.render(context)
@@ -580,6 +634,7 @@ class FixturesMenuTests(MenusFixture, BaseMenuTest):
 
 
 class MenuTests(BaseMenuTest):
+
     def test_build_nodes_inner_for_worst_case_menu(self):
         '''
             Tests the worst case scenario
@@ -875,16 +930,17 @@ class ShowSubMenuCheck(SubMenusFixture, BaseMenuTest):
         context = self.get_context(page.get_absolute_url())
 
         # test standard show_menu
-        with self.assertNumQueries(FuzzyInt(5, 7)):
+        with self.assertNumQueries(8):
             """
             The queries should be:
-                get all pages
+                get all public pages
+                get all draft pages for public pages
                 get all page permissions
                 get all titles
                 get the menu cache key
-                create a savepoint (in django>=1.6)
+                create a savepoint
                 set the menu cache key
-                release the savepoint (in django>=1.6)
+                release the savepoint
             """
             tpl = Template("{% load menu_tags %}{% show_sub_menu %}")
             tpl.render(context)
@@ -1048,16 +1104,17 @@ class ShowMenuBelowIdTests(BaseMenuTest):
 
         with LanguageOverride('en'):
             context = self.get_context(a.get_absolute_url())
-            with self.assertNumQueries(FuzzyInt(5, 7)):
+            with self.assertNumQueries(8):
                 """
                 The queries should be:
-                    get all pages
+                    get all public pages
+                    get all draft pages for public pages
                     get all page permissions
                     get all titles
                     get the menu cache key
-                    create a savepoint (in django>=1.6)
+                    create a savepoint
                     set the menu cache key
-                    release the savepoint (in django>=1.6)
+                    release the savepoint
                 """
                 # Actually seems to run:
                 tpl = Template("{% load menu_tags %}{% show_menu_below_id 'a' 0 100 100 100 %}")
@@ -1127,9 +1184,12 @@ class ViewPermissionMenuTests(CMSTestCase):
     def test_public_for_all_staff(self):
         request = self.get_request(self.user)
         request.user.is_staff = True
-        with self.assertNumQueries(1):
+        with self.assertNumQueries(4):
             """
             The queries are:
+            User permissions
+            Content type
+            GlobalPagePermission query
             PagePermission count query
             """
             result = get_visible_pages(request, self.pages)
@@ -1138,9 +1198,13 @@ class ViewPermissionMenuTests(CMSTestCase):
     @override_settings(CMS_PUBLIC_FOR='all')
     def test_public_for_all(self):
         request = self.get_request(self.user)
-        with self.assertNumQueries(1):
+
+        with self.assertNumQueries(4):
             """
             The queries are:
+            User permissions
+            Content type
+            GlobalPagePermission query
             PagePermission query for affected pages
             """
             result = get_visible_pages(request, self.pages)
@@ -1160,12 +1224,10 @@ class ViewPermissionMenuTests(CMSTestCase):
     def test_authed_basic_perm(self):
         self.user.user_permissions.add(Permission.objects.get(codename='view_page'))
         request = self.get_request(self.user)
-        with self.assertNumQueries(5):
+
+        with self.assertNumQueries(2):
             """
             The queries are:
-            Site
-            PagePermission count query
-            GlobalpagePermission count query
             User permissions
             Content type
             """
@@ -1174,10 +1236,10 @@ class ViewPermissionMenuTests(CMSTestCase):
 
     def test_authed_no_access(self):
         request = self.get_request(self.user)
-        with self.assertNumQueries(5):
+
+        with self.assertNumQueries(4):
             """
             The queries are:
-            Site
             View Permission Calculation Query
             GlobalpagePermission query for user
             User permissions
@@ -1188,17 +1250,21 @@ class ViewPermissionMenuTests(CMSTestCase):
 
     def test_unauthed_no_access(self):
         request = self.get_request()
-        with self.assertNumQueries(1):
+
+        with self.assertNumQueries(0):
             result = get_visible_pages(request, self.pages)
             self.assertEqual(result, [])
 
     def test_page_permissions(self):
         request = self.get_request(self.user)
         PagePermission.objects.create(can_view=True, user=self.user, page=self.page)
-        with self.assertNumQueries(2):
+
+        with self.assertNumQueries(4):
             """
             The queries are:
             PagePermission query for affected pages
+            User permissions
+            Content type
             GlobalpagePermission query for user
             """
             result = get_visible_pages(request, self.pages)
@@ -1209,10 +1275,13 @@ class ViewPermissionMenuTests(CMSTestCase):
         self.user.groups.add(group)
         request = self.get_request(self.user)
         PagePermission.objects.create(can_view=True, group=group, page=self.page)
-        with self.assertNumQueries(3):
+
+        with self.assertNumQueries(5):
             """
             The queries are:
             PagePermission query for affected pages
+            User permissions
+            Content type
             GlobalpagePermission query for user
             Group query via PagePermission
             """
@@ -1224,10 +1293,12 @@ class ViewPermissionMenuTests(CMSTestCase):
         request = self.get_request(self.user)
         group = Group.objects.create(name='testgroup')
         PagePermission.objects.create(can_view=True, group=group, page=self.page)
-        with self.assertNumQueries(2):
+
+        with self.assertNumQueries(3):
             """
             The queries are:
-            PagePermission query for affected pages
+            User permissions
+            Content type
             GlobalpagePermission query for user
             """
             result = get_visible_pages(request, self.pages)

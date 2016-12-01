@@ -3,24 +3,19 @@ from collections import defaultdict
 from itertools import groupby, starmap
 from operator import attrgetter, itemgetter
 
-from django.shortcuts import get_object_or_404
 from django.utils.encoding import force_text
 from django.utils.six.moves import filter, filterfalse
 from django.utils.translation import ugettext as _
 
 
 from cms.exceptions import PluginLimitReached
-from cms.models import Page, CMSPlugin
+from cms.models import CMSPlugin
 from cms.plugin_pool import plugin_pool
 from cms.utils import get_language_from_request
 from cms.utils.i18n import get_fallback_languages
 from cms.utils.moderator import get_cmsplugin_queryset
 from cms.utils.permissions import has_plugin_permission
 from cms.utils.placeholder import (get_placeholder_conf, get_placeholders)
-
-
-def get_page_from_plugin_or_404(cms_plugin):
-    return get_object_or_404(Page, placeholders=cms_plugin.placeholder)
 
 
 def get_plugins(request, placeholder, template, lang=None):
@@ -72,15 +67,19 @@ def assign_plugins(request, placeholders, template, lang=None, is_fallback=False
     # If no plugin is present in non fallback placeholders, create default plugins if enabled)
     if not plugins:
         plugins = create_default_plugins(request, non_fallback_phs, template, lang)
-    plugins = downcast_plugins(plugins, non_fallback_phs)
+    plugins = downcast_plugins(plugins, non_fallback_phs, request=request)
     # split the plugins up by placeholder
     # Plugins should still be sorted by placeholder
     plugin_groups = dict((key, list(plugins)) for key, plugins in groupby(plugins, attrgetter('placeholder_id')))
+    all_plugins_groups = plugin_groups.copy()
     for group in plugin_groups:
         plugin_groups[group] = build_plugin_tree(plugin_groups[group])
     groups = fallbacks.copy()
     groups.update(plugin_groups)
     for placeholder in placeholders:
+        # This is all the plugins.
+        setattr(placeholder, '_all_plugins_cache', all_plugins_groups.get(placeholder.pk, []))
+        # This one is only the root plugins.
         setattr(placeholder, '_plugins_cache', groups.get(placeholder.pk, []))
 
 
@@ -114,7 +113,6 @@ def create_default_plugins(request, placeholders, template, lang):
             parent.notify_on_autoadd_children(request, conf, plugins)
         return plugins + descendants
 
-
     unfiltered_confs = ((ph, get_placeholder_conf('default_plugins',
                                                   ph.slot, template))
                         for ph in placeholders)
@@ -122,7 +120,7 @@ def create_default_plugins(request, placeholders, template, lang):
     mutable_confs = ((ph, default_plugin_confs)
                      for ph, default_plugin_confs
                      in filter(itemgetter(1), unfiltered_confs)
-                     if ph.has_add_permission(request))
+                     if ph.has_change_permission(request.user))
     return sum(starmap(_create_default_plugins, mutable_confs), [])
 
 
@@ -145,33 +143,49 @@ def build_plugin_tree(plugins):
                   key=attrgetter('position'))
 
 
-def downcast_plugins(queryset, placeholders=None, select_placeholder=False):
+def downcast_plugins(plugins,
+                     placeholders=None, select_placeholder=False, request=None):
     plugin_types_map = defaultdict(list)
     plugin_lookup = {}
+    plugin_ids = []
 
     # make a map of plugin types, needed later for downcasting
-    for plugin in queryset:
+    for plugin in plugins:
+        # Keep track of the plugin ids we've received
+        plugin_ids.append(plugin.pk)
         plugin_types_map[plugin.plugin_type].append(plugin.pk)
+
+    placeholders = placeholders or []
+    placeholders_by_id = {placeholder.pk: placeholder for placeholder in placeholders}
+
     for plugin_type, pks in plugin_types_map.items():
         cls = plugin_pool.get_plugin(plugin_type)
         # get all the plugins of type cls.model
         plugin_qs = cls.get_render_queryset().filter(pk__in=pks)
+
         if select_placeholder:
             plugin_qs = plugin_qs.select_related('placeholder')
 
         # put them in a map so we can replace the base CMSPlugins with their
         # downcasted versions
-        for instance in plugin_qs:
+        for instance in plugin_qs.iterator():
+            placeholder = placeholders_by_id.get(instance.placeholder_id)
+
+            if placeholder:
+                instance.placeholder = placeholder
+
+                if not cls.cache and not cls().get_cache_expiration(request, instance, placeholder):
+                    placeholder.cache_placeholder = False
+
             plugin_lookup[instance.pk] = instance
-            # cache the placeholder
-            if placeholders:
-                for pl in placeholders:
-                    if instance.placeholder_id == pl.pk:
-                        instance.placeholder = pl
-                        if not cls.cache:
-                            pl.cache_placeholder = False
-            # make the equivalent list of qs, but with downcasted instances
-    return [plugin_lookup.get(plugin.pk, plugin) for plugin in queryset]
+
+    for plugin in plugins:
+        parent_not_available = (not plugin.parent_id or plugin.parent_id not in plugin_ids)
+        # The plugin either has no parent or needs to have a non-ghost parent
+        valid_parent = (parent_not_available or plugin.parent_id in plugin_lookup)
+
+        if valid_parent and plugin.pk in plugin_lookup:
+            yield plugin_lookup[plugin.pk]
 
 
 def reorder_plugins(placeholder, parent_id, language, order):
@@ -183,27 +197,24 @@ def reorder_plugins(placeholder, parent_id, language, order):
     :param language: language
     :param order: optional custom order (given as list of plugin primary keys)
     """
-    plugins = CMSPlugin.objects.filter(parent=parent_id,
-                                       placeholder=placeholder,
-                                       language=language).order_by('position')
-    x = 0
-    for level_plugin in plugins:
-        if order:
-            x = 0
-            found = False
-            for pk in order:
-                if level_plugin.pk == int(pk):
-                    level_plugin.position = x
-                    level_plugin.save()
-                    found = True
-                    break
-                x += 1
-            if not found:
-                return False
-        else:
-            level_plugin.position = x
-            level_plugin.save()
-            x += 1
+    plugins = CMSPlugin.objects.filter(
+        parent=parent_id,
+        placeholder=placeholder,
+        language=language,
+    ).order_by('position')
+
+    # Make sure we're dealing with a list
+    order = list(order)
+
+    if order:
+        plugins = plugins.filter(pk__in=order)
+
+        for plugin in plugins.iterator():
+            position = order.index(plugin.pk)
+            plugin.update(position=position)
+    else:
+        for position, plugin in enumerate(plugins.iterator()):
+            plugin.update(position=position)
     return plugins
 
 
@@ -229,15 +240,17 @@ def has_reached_plugin_limit(placeholder, plugin_type, language, template=None):
         global_limit = limits.get("global")
         type_limit = limits.get(plugin_type)
         # total plugin count
-        count = placeholder.cmsplugin_set.filter(language=language).count()
+        count = placeholder.get_plugins(language=language).count()
         if global_limit and count >= global_limit:
             raise PluginLimitReached(_("This placeholder already has the maximum number of plugins (%s)." % count))
         elif type_limit:
             # total plugin type count
-            type_count = placeholder.cmsplugin_set.filter(
-                language=language,
-                plugin_type=plugin_type,
-            ).count()
+            type_count = (
+                placeholder
+                .get_plugins(language=language)
+                .filter(plugin_type=plugin_type)
+                .count()
+            )
             if type_count >= type_limit:
                 plugin_name = force_text(plugin_pool.get_plugin(plugin_type).name)
                 raise PluginLimitReached(_(

@@ -42,9 +42,9 @@ The basic workflow for a code contribution will typically run as follows:
 #. Install its dependencies::
 
     cd django-cms
-    pip install -r test_requirements/django-1.7.txt
+    pip install -r test_requirements/django-X.Y.txt
 
-   Replace ``1.7`` with whichever version of Django you want to work with.
+   Replace ``X.Y`` with whichever version of Django you want to work with.
 
 #. Create a new branch for your work::
 
@@ -68,10 +68,7 @@ The basic workflow for a code contribution will typically run as follows:
 Target branches
 ===============
 
-The django CMS project will always have at least two active branches:
-
-* ``support/version.x`` which you should target if you're submitting a bug-fix for ``version.x``
-* ``develop`` for new features and bug-fixes for the next release
+See :ref:`branch_policy` for information about branch policy.
 
 
 *******************
@@ -84,7 +81,7 @@ integration tests.
 Depending on your contribution, you will write a mix of them.
 
 Let's start with something simple. We'll assume you have set up your environment correctly as
-`described above <start-contributing>`_.
+:ref:`described above <start-contributing>`.
 
 Let's say you want to test the behaviour of the ``CMSPluginBase.render`` method:
 
@@ -114,7 +111,7 @@ Let's try to run it:
 
 .. code-block:: bash
 
-    python manage.py test cms.SimplePluginTestCase
+    python manage.py test cms.tests.test_plugins.SimplePluginTestCase
 
 This will call the new test case class only and it's handy when creating new tests and iterating
 quickly through the steps. A full test run (``python manage.py test``) is required before opening
@@ -222,6 +219,9 @@ Acceptance criteria
 Matching these criteria from the very beginning will help the core developers to be able
 to review your submission more quickly and efficiently and will increase the chances of making a
 successful pull request.
+
+Please see our :ref:`development_policies` for guidance on which branches to use, how to prepare pull requests and so
+on.
 
 Features
 --------

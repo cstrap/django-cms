@@ -2,15 +2,21 @@
 from django.contrib.auth import get_user_model
 from django.core.urlresolvers import clear_url_caches
 from django.template import Template
+from django.utils.http import urlencode
+from django.test import RequestFactory
 from django.test.utils import override_settings
-from djangocms_text_ckeditor.models import Text
+
+from djangocms_link.models import Link
 
 from cms.api import create_page
+from cms.middleware.toolbar import ToolbarMiddleware
 from cms.models import Page, CMSPlugin
 from cms.test_utils.testcases import (CMSTestCase,
                                       URL_CMS_PAGE_ADD, URL_CMS_PLUGIN_EDIT,
                                       URL_CMS_PLUGIN_ADD,
                                       URL_CMS_PAGE_CHANGE_TEMPLATE)
+from cms.toolbar.toolbar import CMSToolbar
+from cms.utils import get_cms_setting
 
 
 @override_settings(
@@ -49,7 +55,32 @@ class TestNoI18N(CMSTestCase):
         super(TestNoI18N, self).setUp()
 
     def tearDown(self):
+        super(TestNoI18N, self).tearDown()
         clear_url_caches()
+
+    def get_page_request(self, page, user, path=None, edit=False, lang_code='en', disable=False):
+        path = path or page and page.get_absolute_url()
+        if edit:
+            path += '?%s' % get_cms_setting('CMS_TOOLBAR_URL__EDIT_ON')
+        request = RequestFactory().get(path)
+        request.session = {}
+        request.user = user
+        request.LANGUAGE_CODE = lang_code
+        request.GET = request.GET.copy()
+
+        if edit:
+            request.GET['edit'] = None
+        else:
+            request.GET['edit_off'] = None
+
+        if disable:
+            request.GET[get_cms_setting('CMS_TOOLBAR_URL__DISABLE')] = None
+        request.current_page = page
+        mid = ToolbarMiddleware()
+        mid.process_request(request)
+        if hasattr(request, 'toolbar'):
+            request.toolbar.populate()
+        return request
 
     def test_language_chooser(self):
         # test simple language chooser with default args
@@ -100,7 +131,7 @@ class TestNoI18N(CMSTestCase):
         ):
             create_page("home", template="col_two.html", language="en-us", published=True, redirect='/foobar/')
             response = self.client.get('/', follow=False)
-            self.assertEqual(response['Location'], 'http://testserver/foobar/')
+            self.assertTrue(response['Location'].endswith("/foobar/"))
 
     def test_plugin_add_edit(self):
         page_data = {
@@ -116,38 +147,40 @@ class TestNoI18N(CMSTestCase):
         self.client.login(username=getattr(self.super_user, get_user_model().USERNAME_FIELD),
                           password=getattr(self.super_user, get_user_model().USERNAME_FIELD))
 
-        response = self.client.post(URL_CMS_PAGE_ADD[3:], page_data)
+        self.client.post(URL_CMS_PAGE_ADD[3:], page_data)
         page = Page.objects.all()[0]
-        response = self.client.post(URL_CMS_PAGE_CHANGE_TEMPLATE[3:] % page.pk, page_data)
+        self.client.post(URL_CMS_PAGE_CHANGE_TEMPLATE[3:] % page.pk, page_data)
         page = Page.objects.all()[0]
 
-        plugin_data = {
-            'plugin_type': "TextPlugin",
+        get_params = {
+            'plugin_type': "LinkPlugin",
             'plugin_language': "en-us",
             'placeholder_id': page.placeholders.get(slot="body").pk,
         }
-        response = self.client.post(URL_CMS_PLUGIN_ADD[3:], plugin_data)
+        data = {'name': 'Hello', 'url': 'http://www.example.org/'}
+        add_url = URL_CMS_PLUGIN_ADD[3:] + '?' + urlencode(
+            get_params
+        )
+        response = self.client.post(add_url, data)
         self.assertEqual(response.status_code, 200)
-        created_plugin_id = int(response.content.decode('utf8').split("/edit-plugin/")[1].split("/")[0])
-        self.assertEqual(created_plugin_id, CMSPlugin.objects.all()[0].pk)
+        created_plugin_id = CMSPlugin.objects.all()[0].pk
         # now edit the plugin
         edit_url = "%s%s/" % (URL_CMS_PLUGIN_EDIT[3:], created_plugin_id)
         response = self.client.get(edit_url)
         self.assertEqual(response.status_code, 200)
-        data = {
-            "body": "Hello World"
-        }
+        data['name'] = 'Hello World'
         response = self.client.post(edit_url, data)
         self.assertEqual(response.status_code, 200)
-        txt = Text.objects.get(pk=created_plugin_id)
-        self.assertEqual("Hello World", txt.body)
-        # edit body, but click cancel button
-        data = {
-            "body": "Hello World!!",
-            "_cancel": True,
-        }
-        edit_url = '%s%d/' % (URL_CMS_PLUGIN_EDIT[3:], created_plugin_id)
-        response = self.client.post(edit_url, data)
-        self.assertEqual(response.status_code, 200)
-        txt = Text.objects.all()[0]
-        self.assertEqual("Hello World", txt.body)
+        link = Link.objects.get(pk=created_plugin_id)
+        self.assertEqual("Hello World", link.name)
+
+    def test_toolbar_no_locale(self):
+        page = create_page('test', 'nav_playground.html', 'en-us', published=True)
+        sub = create_page('sub', 'nav_playground.html', 'en-us', published=True, parent=page)
+        # loads the urlconf before reverse below
+        sub.get_absolute_url('en-us')
+        request = self.get_page_request(sub, self.get_superuser(), edit=True)
+        del request.LANGUAGE_CODE
+        toolbar = CMSToolbar(request)
+        toolbar.set_object(sub)
+        self.assertEqual(toolbar.get_object_public_url(), '/sub/')

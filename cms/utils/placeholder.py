@@ -1,28 +1,18 @@
 # -*- coding: utf-8 -*-
-from collections import namedtuple
 import operator
 import warnings
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.db.models.query_utils import Q
-from django.template import TemplateSyntaxError, NodeList, Variable
+from django.template import TemplateSyntaxError, NodeList, Variable, Context, Template, engines
 from django.template.base import VariableNode
 from django.template.loader import get_template
-from django.template.loader_tags import ExtendsNode, BlockNode
-try:
-    from django.template.loader_tags import ConstantIncludeNode as IncludeNode
-except ImportError:
-    from django.template.loader_tags import IncludeNode
+from django.template.loader_tags import BlockNode, ExtendsNode, IncludeNode
 from django.utils import six
 from django.utils.encoding import force_text
 
-try:
-    from sekizai.helpers import get_varname, is_variable_extend_node, engines
-except ImportError:
-    from sekizai.helpers import get_varname, is_variable_extend_node
-    engines = None
-
+from sekizai.helpers import get_varname, is_variable_extend_node
 
 from cms.exceptions import DuplicatePlaceholderWarning
 from cms.utils import get_cms_setting
@@ -37,7 +27,9 @@ def _get_nodelist(tpl):
 
 def get_context():
     if engines is not None:
-        return namedtuple('Context', 'template')(namedtuple('Template', 'engine')(engines.all()[0]))
+        context = Context()
+        context.template = Template('')
+        return context
     else:
         return {}
 
@@ -47,36 +39,48 @@ def get_placeholder_conf(setting, placeholder, template=None, default=None):
     Returns the placeholder configuration for a given setting. The key would for
     example be 'plugins' or 'name'.
 
-    If a template is given, it will try
-    CMS_PLACEHOLDER_CONF['template placeholder'] and
-    CMS_PLACEHOLDER_CONF['placeholder'], if no template is given only the latter
-    is checked.
+    Resulting value will be the last from:
+
+    CMS_PLACEHOLDER_CONF[None] (global)
+    CMS_PLACEHOLDER_CONF['template'] (if template is given)
+    CMS_PLACEHOLDER_CONF['placeholder']
+    CMS_PLACEHOLDER_CONF['template placeholder'] (if template is given)
     """
+
     if placeholder:
         keys = []
+        placeholder_conf = get_cms_setting('PLACEHOLDER_CONF')
+        # 1st level
         if template:
-            keys.append("%s %s" % (template, placeholder))
+            keys.append(u'%s %s' % (template, placeholder))
+        # 2nd level
         keys.append(placeholder)
+        # 3rd level
+        if template:
+            keys.append(template)
+        # 4th level
+        keys.append(None)
         for key in keys:
-            conf = get_cms_setting('PLACEHOLDER_CONF').get(key)
-            if not conf:
-                continue
-            value = conf.get(setting)
-            if value is not None:
-                return value
-            inherit = conf.get('inherit')
-            if inherit:
-                if ' ' in inherit:
-                    inherit = inherit.split(' ')
-                else:
-                    inherit = (None, inherit,)
-                value = get_placeholder_conf(setting, inherit[1], inherit[0], default)
-                if value is not None:
-                    return value
+            for conf_key, conf in placeholder_conf.items():
+                if force_text(conf_key) == force_text(key):
+                    if not conf:
+                        continue
+                    value = conf.get(setting)
+                    if value is not None:
+                        return value
+                    inherit = conf.get('inherit')
+                    if inherit:
+                        if ' ' in inherit:
+                            inherit = inherit.split(' ')
+                        else:
+                            inherit = (None, inherit)
+                        value = get_placeholder_conf(setting, inherit[1], inherit[0], default)
+                        if value is not None:
+                            return value
     return default
 
 
-def get_toolbar_plugin_struct(plugins_list, slot, page, parent=None):
+def get_toolbar_plugin_struct(plugins, slot=None, page=None):
     """
     Return the list of plugins to render in the toolbar.
     The dictionary contains the label, the classname and the module for the
@@ -84,31 +88,27 @@ def get_toolbar_plugin_struct(plugins_list, slot, page, parent=None):
     Names and modules can be defined on a per-placeholder basis using
     'plugin_modules' and 'plugin_labels' attributes in CMS_PLACEHOLDER_CONF
 
-    :param plugins_list: list of plugins valid for the placeholder
+    :param plugins: list of plugins
     :param slot: placeholder slot name
     :param page: the page
-    :param parent: parent plugin class, if any
     :return: list of dictionaries
     """
     template = None
+
     if page:
         template = page.template
+
+    modules = get_placeholder_conf("plugin_modules", slot, template, default={})
+    names = get_placeholder_conf("plugin_labels", slot, template, default={})
+
     main_list = []
-    for plugin in plugins_list:
-        allowed_parents = plugin().get_parent_classes(slot, page)
-        if parent:
-            ## skip to the next if this plugin is not allowed to be a child
-            ## of the parent
-            if allowed_parents and parent.__name__ not in allowed_parents:
-                continue
-        else:
-            if allowed_parents:
-                continue
-        modules = get_placeholder_conf("plugin_modules", slot, template, default={})
-        names = get_placeholder_conf("plugin_labels", slot, template, default={})
+
+    # plugin.value points to the class name of the plugin
+    # It's added on registration. TIL.
+    for plugin in plugins:
         main_list.append({'value': plugin.value,
-                          'name': force_text(names.get(plugin.value, plugin.name)),
-                          'module': force_text(modules.get(plugin.value, plugin.module))})
+                          'name': names.get(plugin.value, plugin.name),
+                          'module': modules.get(plugin.value, plugin.module)})
     return sorted(main_list, key=operator.itemgetter("module"))
 
 
@@ -184,7 +184,6 @@ def _scan_placeholders(nodelist, current_block=None, ignore_blocks=None):
         elif isinstance(node, IncludeNode):
             # if there's an error in the to-be-included template, node.template becomes None
             if node.template:
-                # This is required for Django 1.7 but works on older version too
                 # Check if it quacks like a template object, if not
                 # presume is a template path and get the object out of it
                 if not callable(getattr(node.template, 'render', None)):
